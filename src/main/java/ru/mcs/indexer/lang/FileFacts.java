@@ -36,6 +36,18 @@ public final class FileFacts {
     public record DepRow(int typeLocal, String toFqn, String depKind, boolean resolved) {
     }
 
+    public record ModuleRow(String name, boolean open, int line) {
+    }
+
+    public record DirectiveRow(String directive, String target, String extra, int line) {
+    }
+
+    public record ConfigRow(String keyPath, String value, int line) {
+    }
+
+    public record GradleDepRow(String config, String depKind, String target, int line) {
+    }
+
     public record ErrorRow(String stage, String message) {
     }
 
@@ -46,7 +58,13 @@ public final class FileFacts {
     private final List<AnnotationRow> annotations = new ArrayList<>();
     private final List<CallRow> calls = new ArrayList<>();
     private final Map<String, DepRow> deps = new LinkedHashMap<>();
+    private final List<DirectiveRow> directives = new ArrayList<>();
+    private final List<ConfigRow> configs = new ArrayList<>();
+    private final List<String> gradleIncludes = new ArrayList<>();
+    private final List<GradleDepRow> gradleDeps = new ArrayList<>();
     private final List<ErrorRow> errors = new ArrayList<>();
+    private ModuleRow javaModule;
+    private String gradleRootName;
 
     public void addImport(ImportRow row) {
         imports.add(row);
@@ -83,6 +101,30 @@ public final class FileFacts {
         }
     }
 
+    public void setJavaModule(ModuleRow row) {
+        this.javaModule = row;
+    }
+
+    public void addDirective(DirectiveRow row) {
+        directives.add(row);
+    }
+
+    public void addConfig(ConfigRow row) {
+        configs.add(row);
+    }
+
+    public void addGradleInclude(String gradlePath) {
+        gradleIncludes.add(gradlePath);
+    }
+
+    public void addGradleDep(GradleDepRow row) {
+        gradleDeps.add(row);
+    }
+
+    public void setGradleRootName(String name) {
+        this.gradleRootName = name;
+    }
+
     public void addError(String stage, String message) {
         errors.add(new ErrorRow(stage, message));
     }
@@ -113,6 +155,30 @@ public final class FileFacts {
 
     public List<DepRow> deps() {
         return new ArrayList<>(deps.values());
+    }
+
+    public ModuleRow javaModule() {
+        return javaModule;
+    }
+
+    public List<DirectiveRow> directives() {
+        return directives;
+    }
+
+    public List<ConfigRow> configs() {
+        return configs;
+    }
+
+    public List<String> gradleIncludes() {
+        return gradleIncludes;
+    }
+
+    public List<GradleDepRow> gradleDeps() {
+        return gradleDeps;
+    }
+
+    public String gradleRootName() {
+        return gradleRootName;
     }
 
     public List<ErrorRow> errors() {

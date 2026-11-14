@@ -49,3 +49,12 @@
 - [x] Деградация вместо падения: бюджет CPU на файл, `resolved=0` при любой ошибке резолва.
 - [x] Диагностика встроена: `-Dindexer.threads`, `-Dindexer.profile`, `-v`.
 - [ ] Не покрыто: `this(...)` и `super(...)`, внешние JAR, резолв вызовов методов JDK и библиотек (по решению фильтра).
+
+## Чек-лист этапа 5
+
+- [x] `java_modules` и `module_directives` из `module-info.java` (все пять видов директив).
+- [x] `gradle_modules`, `gradle_deps` из `settings.gradle`, `build.gradle` и `.kts` (только регулярные выражения).
+- [x] `files.module`: ближайший вверх каталог модуля.
+- [x] `config_entries` из yml, yaml, json, properties, toml с номерами строк.
+- [x] Ошибка разбора пишется как `PARSE`, остальное индексируется.
+- [ ] Не покрыто: Gradle-зависимости, записанные на нескольких строках, `libs.*` из version catalog, нестандартный `projectDir`, инлайн-таблицы TOML остаются сырым текстом.

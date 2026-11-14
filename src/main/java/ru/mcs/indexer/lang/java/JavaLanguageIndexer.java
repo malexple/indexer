@@ -89,6 +89,7 @@ public final class JavaLanguageIndexer implements LanguageIndexer {
         TypeResolver resolver = new TypeResolver(resolve, unit.get(), filter, TypeResolver.DEFAULT_BUDGET_MS);
         try {
             new JavaWalker(unit.get(), ctx.content(), out, resolver).run();
+            unit.get().getModule().ifPresent(module -> ModuleInfoWalker.index(module, out));
         } catch (RuntimeException | StackOverflowError e) {
             out.addError("PARSE", "AST walk failed: " + e);
         }

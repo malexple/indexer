@@ -19,6 +19,8 @@ public final class IndexWriter implements AutoCloseable {
     private final PreparedStatement insertError;
     private final PreparedStatement lastId;
     private final FactsWriter facts;
+    private final ExtraWriter extra;
+    private final GradleRegistry gradle = new GradleRegistry();
 
     public IndexWriter(Db db, boolean storeContent) throws SQLException {
         this.db = db;
@@ -29,6 +31,7 @@ public final class IndexWriter implements AutoCloseable {
         insertError = c.prepareStatement("INSERT INTO index_errors(file_id, path, stage, message) VALUES (?, ?, ?, ?)");
         lastId = c.prepareStatement("SELECT last_insert_rowid()");
         facts = new FactsWriter(db);
+        extra = new ExtraWriter(db);
     }
 
     public boolean writeFile(LoadedFile file, String indexedAt) throws SQLException {
@@ -57,6 +60,7 @@ public final class IndexWriter implements AutoCloseable {
                 long fileId = lastInsertId();
                 if (fileFacts != null) {
                     facts.write(fileId, fileFacts);
+                    extra.write(fileId, fileFacts);
                     for (FileFacts.ErrorRow error : fileFacts.errors()) {
                         bindError(fileId, file.path(), error.stage(), error.message());
                     }
@@ -65,12 +69,18 @@ public final class IndexWriter implements AutoCloseable {
                     bindError(fileId, file.path(), "READ", warning);
                 }
             });
+            gradle.collect(file.path(), fileFacts);
             return true;
         } catch (SQLException e) {
             facts.reset(mark);
             recordError(null, file.path(), "DB", String.valueOf(e.getMessage()));
             return false;
         }
+    }
+
+    /** Call once after all files are written: gradle_modules, gradle_deps and files.module. */
+    public void finishGradle(String defaultRootName) throws SQLException {
+        gradle.finish(db, defaultRootName);
     }
 
     public void recordError(Long fileId, String path, String stage, String message) throws SQLException {
@@ -112,15 +122,19 @@ public final class IndexWriter implements AutoCloseable {
     @Override
     public void close() throws SQLException {
         try {
-            facts.close();
+            extra.close();
         } finally {
             try {
-                insertFile.close();
+                facts.close();
             } finally {
                 try {
-                    insertError.close();
+                    insertFile.close();
                 } finally {
-                    lastId.close();
+                    try {
+                        insertError.close();
+                    } finally {
+                        lastId.close();
+                    }
                 }
             }
         }

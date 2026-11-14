@@ -72,6 +72,8 @@ public final class IndexerApp {
         GitInfo gitInfo = GitInfo.collect(git, options.root(), options.out());
         String runTimestamp = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
         LanguageRegistry registry = LanguageRegistry.create(options, sourceRoots);
+        Path rootFileName = options.root().getFileName();
+        String rootName = rootFileName == null ? "root" : rootFileName.toString();
 
         try (Db db = Db.open(options.out())) {
             Map<String, PriorFile> prior = db.loadPriorFiles();
@@ -86,13 +88,14 @@ public final class IndexerApp {
                 writer.recordSkipped(selection.skipped());
                 result = FileIndexPipeline.run(selection.files(), registry, writer, prior, runTimestamp, log,
                         workers);
+                writer.finishGradle(rootName);
             }
             long afterWrite = System.nanoTime();
 
             db.rebuildFts();
             long afterFts = System.nanoTime();
 
-            writeFinalMeta(db, options, gitInfo, runTimestamp);
+            writeFinalMeta(db, options, gitInfo, runTimestamp, rootName);
             db.setVacuumOnClose(true);
 
             log.info("written=" + result.written() + ", failed=" + result.failed() + ", workers=" + workers);
@@ -117,14 +120,13 @@ public final class IndexerApp {
         return (toNanos - fromNanos) / 1_000_000;
     }
 
-    private static void writeFinalMeta(Db db, IndexerOptions options, GitInfo git, String runTimestamp)
-            throws SQLException {
-        Path name = options.root().getFileName();
+    private static void writeFinalMeta(Db db, IndexerOptions options, GitInfo git, String runTimestamp,
+                                       String rootName) throws SQLException {
         Map<String, String> meta = new LinkedHashMap<>();
         meta.put("schema_version", String.valueOf(Schema.VERSION));
         meta.put("indexer_version", Versions.indexer());
         meta.put("indexed_at", runTimestamp);
-        meta.put("root_name", name == null ? options.root().toString() : name.toString());
+        meta.put("root_name", rootName);
         meta.put("languages", String.join(",", options.languages()));
         meta.put("git_commit", git.commit());
         meta.put("git_commit_short", git.commitShort());
