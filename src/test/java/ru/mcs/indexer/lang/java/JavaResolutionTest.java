@@ -101,8 +101,8 @@ class JavaResolutionTest {
 
         List<FileFacts.CallRow> trim = calls(facts, "METHOD", "trim");
         assertThat(trim).hasSize(1);
-        assertThat(trim.get(0).calleeOwnerFqn()).isEqualTo("java.lang.String");
-        assertThat(trim.get(0).calleeSignature()).isEqualTo("trim():java.lang.String");
+        assertThat(trim.get(0).resolved()).isFalse();
+        assertThat(trim.get(0).calleeOwnerFqn()).isNull();
 
         List<FileFacts.CallRow> bar = calls(facts, "METHOD", "bar");
         assertThat(bar).hasSize(1);

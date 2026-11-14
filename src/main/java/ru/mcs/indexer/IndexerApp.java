@@ -28,6 +28,10 @@ import java.util.Map;
 
 public final class IndexerApp {
 
+    /** Symbol resolution duplicates per-thread solver caches: measured optimum is 2 workers. */
+    private static final int DEFAULT_RESOLVE_WORKERS = 2;
+    private static final int MAX_PARSE_WORKERS = 8;
+
     private static final List<String> STAT_TABLES = List.of(
             "files", "types", "members", "calls", "imports", "annotations", "type_relations",
             "type_deps", "config_entries", "gradle_modules", "gradle_deps", "java_modules",
@@ -60,6 +64,10 @@ public final class IndexerApp {
         for (Path sourceRoot : sourceRoots) {
             log.debug("java source root: " + sourceRoot);
         }
+        int cores = Runtime.getRuntime().availableProcessors();
+        int defaultWorkers = options.noResolve() ? Math.min(cores, MAX_PARSE_WORKERS)
+                : Math.min(cores, DEFAULT_RESOLVE_WORKERS);
+        int workers = Math.max(1, Integer.getInteger("indexer.threads", defaultWorkers));
 
         GitInfo gitInfo = GitInfo.collect(git, options.root(), options.out());
         String runTimestamp = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
@@ -76,7 +84,8 @@ public final class IndexerApp {
             FileIndexPipeline.Result result;
             try (IndexWriter writer = new IndexWriter(db, !options.noSource())) {
                 writer.recordSkipped(selection.skipped());
-                result = FileIndexPipeline.run(selection.files(), registry, writer, prior, runTimestamp, log);
+                result = FileIndexPipeline.run(selection.files(), registry, writer, prior, runTimestamp, log,
+                        workers);
             }
             long afterWrite = System.nanoTime();
 
@@ -86,7 +95,7 @@ public final class IndexerApp {
             writeFinalMeta(db, options, gitInfo, runTimestamp);
             db.setVacuumOnClose(true);
 
-            log.info("written=" + result.written() + ", failed=" + result.failed());
+            log.info("written=" + result.written() + ", failed=" + result.failed() + ", workers=" + workers);
             if (options.stats()) {
                 printStats(db, log);
                 log.info("timings: select=" + ms(start, afterSelect) + " ms, index+write="

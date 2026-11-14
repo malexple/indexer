@@ -20,6 +20,8 @@ import com.github.javaparser.resolution.declarations.ResolvedParameterDeclaratio
 import com.github.javaparser.resolution.types.ResolvedType;
 import ru.mcs.indexer.lang.FileFacts;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -28,12 +30,20 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Per-file facade over the symbol solver. Every resolver failure degrades to a best-effort name
- * (explicit imports) with resolved=false; it never throws.
+ * (explicit imports) with resolved=false; it never throws. Two guards bound the cost of symbols the
+ * solver cannot find: a relevance filter (see ProjectNames) and a per-file CPU-time budget.
  */
 final class TypeResolver {
+
+    static final long DEFAULT_BUDGET_MS = Long.getLong("indexer.resolve.budget.ms", 3000L);
+
+    private static final ThreadMXBean THREADS = ManagementFactory.getThreadMXBean();
+    private static final boolean CPU_TIME = THREADS.isCurrentThreadCpuTimeSupported();
+    private static final Map<String, Boolean> JAVA_LANG = new ConcurrentHashMap<>();
 
     /** qualified: name is a fully qualified name (solver or explicit import). resolved: solver confirmed it. */
     record Named(String name, boolean resolved, boolean qualified, boolean typeVariable) {
@@ -43,11 +53,22 @@ final class TypeResolver {
     }
 
     private final boolean enabled;
+    private final ProjectNames names;
+    private final long budgetNanos;
+    private final long startNanos = now();
+    private boolean budgetExceeded;
     private final Map<String, String> imports = new HashMap<>();
     private final Deque<Set<String>> typeVars = new ArrayDeque<>();
 
     TypeResolver(boolean enabled, CompilationUnit unit) {
+        this(enabled, unit, null, DEFAULT_BUDGET_MS);
+    }
+
+    /** names == null disables the relevance filter; budgetMillis <= 0 disables the budget. */
+    TypeResolver(boolean enabled, CompilationUnit unit, ProjectNames names, long budgetMillis) {
         this.enabled = enabled;
+        this.names = names;
+        this.budgetNanos = budgetMillis <= 0 ? Long.MAX_VALUE : budgetMillis * 1_000_000L;
         for (ImportDeclaration declaration : unit.getImports()) {
             if (!declaration.isStatic() && !declaration.isAsterisk()) {
                 String name = declaration.getNameAsString();
@@ -56,12 +77,67 @@ final class TypeResolver {
         }
     }
 
-    void pushTypeVars(List<TypeParameter> parameters) {
-        Set<String> names = new HashSet<>();
-        for (TypeParameter parameter : parameters) {
-            names.add(parameter.getNameAsString());
+    private static long now() {
+        return CPU_TIME ? THREADS.getCurrentThreadCpuTime() : System.nanoTime();
+    }
+
+    boolean budgetExceeded() {
+        return budgetExceeded;
+    }
+
+    long budgetMillis() {
+        return budgetNanos == Long.MAX_VALUE ? 0 : budgetNanos / 1_000_000L;
+    }
+
+    private boolean active() {
+        if (!enabled || budgetExceeded) {
+            return false;
         }
-        typeVars.push(names);
+        if (now() - startNanos > budgetNanos) {
+            budgetExceeded = true;
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean isJavaLang(String simpleName) {
+        return JAVA_LANG.computeIfAbsent(simpleName, name -> {
+            try {
+                Class.forName("java.lang." + name, false, ClassLoader.getPlatformClassLoader());
+                return true;
+            } catch (ClassNotFoundException | LinkageError e) {
+                return false;
+            }
+        });
+    }
+
+    /** False when the name can only denote a library type that the solver is known not to see. */
+    private boolean worthResolvingType(String written) {
+        if (names == null) {
+            return true;
+        }
+        int dot = written.indexOf('.');
+        String head = dot < 0 ? written : written.substring(0, dot);
+        if (Character.isLowerCase(head.charAt(0))) {
+            return names.isInternalOrJdk(written);
+        }
+        String imported = imports.get(head);
+        if (imported != null) {
+            return names.isInternalOrJdk(imported);
+        }
+        return names.hasType(head) || isJavaLang(head);
+    }
+
+    private boolean worthResolvingCall(String methodName) {
+        return names == null || names.hasMethod(methodName);
+    }
+
+    void pushTypeVars(List<TypeParameter> parameters) {
+        Set<String> declared = new HashSet<>();
+        for (TypeParameter parameter : parameters) {
+            declared.add(parameter.getNameAsString());
+        }
+        typeVars.push(declared);
     }
 
     void popTypeVars() {
@@ -69,8 +145,8 @@ final class TypeResolver {
     }
 
     private boolean isTypeVariable(String name) {
-        for (Set<String> names : typeVars) {
-            if (names.contains(name)) {
+        for (Set<String> declared : typeVars) {
+            if (declared.contains(name)) {
                 return true;
             }
         }
@@ -98,7 +174,7 @@ final class TypeResolver {
         if (!scoped && isTypeVariable(written)) {
             return new Named(written, true, true, true);
         }
-        if (enabled) {
+        if (active() && worthResolvingType(written)) {
             try {
                 ResolvedType resolved = type.resolve();
                 if (resolved.isReferenceType()) {
@@ -134,7 +210,7 @@ final class TypeResolver {
 
     Named annotation(AnnotationExpr annotation) {
         String written = annotation.getNameAsString();
-        if (enabled) {
+        if (active() && worthResolvingType(written)) {
             try {
                 ResolvedAnnotationDeclaration declaration = annotation.resolve();
                 return new Named(declaration.getQualifiedName(), true, true, false);
@@ -150,19 +226,18 @@ final class TypeResolver {
     }
 
     Callee method(MethodCallExpr call) {
-        if (!enabled) {
+        if (!worthResolvingCall(call.getNameAsString()) || !active()) {
             return null;
         }
         try {
-            ResolvedMethodDeclaration declaration = call.resolve();
-            return methodCallee(declaration);
+            return methodCallee(call.resolve());
         } catch (RuntimeException | StackOverflowError e) {
             return null;
         }
     }
 
     Callee methodRef(MethodReferenceExpr reference) {
-        if (!enabled) {
+        if (!worthResolvingCall(reference.getIdentifier()) || !active()) {
             return null;
         }
         try {
@@ -173,7 +248,7 @@ final class TypeResolver {
     }
 
     Callee constructor(ObjectCreationExpr creation) {
-        if (!enabled) {
+        if (!worthResolvingType(written(creation.getType())) || !active()) {
             return null;
         }
         try {
@@ -201,16 +276,16 @@ final class TypeResolver {
     }
 
     private static String parameters(ResolvedMethodLikeDeclaration declaration) {
-        List<String> names = new ArrayList<>();
+        List<String> parts = new ArrayList<>();
         for (int i = 0; i < declaration.getNumberOfParams(); i++) {
             ResolvedParameterDeclaration parameter = declaration.getParam(i);
             String name = resolvedName(parameter.getType());
             if (parameter.isVariadic() && name.endsWith("[]")) {
                 name = name.substring(0, name.length() - 2) + "...";
             }
-            names.add(name);
+            parts.add(name);
         }
-        return String.join(",", names);
+        return String.join(",", parts);
     }
 
     private static String resolvedName(ResolvedType type) {

@@ -19,16 +19,21 @@ public final class JavaLanguageIndexer implements LanguageIndexer {
 
     // JavaParser, ParserConfiguration and JavaSymbolSolver are not thread-safe: one stack per worker thread.
     private final ThreadLocal<JavaParser> parsers;
+    private final List<Path> roots;
     private final boolean resolve;
+    private final boolean relevanceFilter =
+            Boolean.parseBoolean(System.getProperty("indexer.resolve.filter", "true"));
+    private volatile ProjectNames names;
 
     public JavaLanguageIndexer() {
         this(List.of(), false);
     }
 
     public JavaLanguageIndexer(List<Path> sourceRoots, boolean resolve) {
-        List<Path> roots = List.copyOf(sourceRoots);
+        this.roots = List.copyOf(sourceRoots);
         this.resolve = resolve;
-        this.parsers = ThreadLocal.withInitial(() -> ResolverFactory.newParser(roots, resolve));
+        this.parsers = ThreadLocal.withInitial(() -> ResolverFactory.newParser(
+                this.roots, this.resolve, this.resolve ? projectNames().knownTypes() : Set.of()));
     }
 
     @Override
@@ -39,6 +44,20 @@ public final class JavaLanguageIndexer implements LanguageIndexer {
     @Override
     public Set<String> extensions() {
         return Set.of("java");
+    }
+
+    private ProjectNames projectNames() {
+        ProjectNames local = names;
+        if (local == null) {
+            synchronized (this) {
+                local = names;
+                if (local == null) {
+                    local = ProjectNames.scan(roots);
+                    names = local;
+                }
+            }
+        }
+        return local;
     }
 
     @Override
@@ -66,10 +85,16 @@ public final class JavaLanguageIndexer implements LanguageIndexer {
         if (unit.isEmpty()) {
             return;
         }
+        ProjectNames filter = resolve && relevanceFilter ? projectNames() : null;
+        TypeResolver resolver = new TypeResolver(resolve, unit.get(), filter, TypeResolver.DEFAULT_BUDGET_MS);
         try {
-            new JavaWalker(unit.get(), ctx.content(), out, new TypeResolver(resolve, unit.get())).run();
+            new JavaWalker(unit.get(), ctx.content(), out, resolver).run();
         } catch (RuntimeException | StackOverflowError e) {
             out.addError("PARSE", "AST walk failed: " + e);
+        }
+        if (resolver.budgetExceeded()) {
+            out.addError("RESOLVE", "resolve CPU-time budget (" + resolver.budgetMillis()
+                    + " ms) exceeded; remaining symbols in this file are left unresolved");
         }
     }
 }
