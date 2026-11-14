@@ -48,8 +48,8 @@ class JavaLanguageIndexerTest {
     void parsesMembersAndSignatures() {
         FileFacts facts = index(DemoSources.MANAGER);
         assertThat(members(facts, 0)).containsExactly(
-                "FIELD|names:List|12-12",
-                "FIELD|other:List|12-12",
+                "FIELD|names:java.util.List|12-12",
+                "FIELD|other:java.util.List|12-12",
                 "METHOD|run():void|13-15",
                 "CONSTRUCTOR|Manager(int,String...)|16-16",
                 "INITIALIZER|<clinit>()|17-17",
@@ -94,13 +94,29 @@ class JavaLanguageIndexerTest {
     }
 
     @Test
-    void ignoresAnonymousAndLocalClasses() {
-        FileFacts facts = index("class A { void m() { Runnable r = new Runnable() { public void run() {} }; "
-                + "class Local {} } }\n");
+    void buildsDepsFromImportsWhenResolverIsDisabled() {
+        FileFacts facts = index(DemoSources.MANAGER);
+        List<String> deps = facts.deps().stream()
+                .filter(d -> d.typeLocal() == 0)
+                .map(d -> d.depKind() + "|" + d.toFqn() + "|" + d.resolved())
+                .toList();
+        assertThat(deps).contains(
+                "EXTENDS|Base|false", "IMPLEMENTS|Runnable|false", "IMPLEMENTS|Comparable|false",
+                "FIELD|java.util.List|false",
+                "IMPORT|java.util.List|true", "IMPORT|java.util.Objects|true", "IMPORT|java.io|false");
+        assertThat(facts.calls()).isEmpty();
+    }
+
+    @Test
+    void ignoresAnonymousAndLocalClassesButKeepsTheirCalls() {
+        FileFacts facts = index("class A { void m() { Runnable r = new Runnable() { public void run() { go(); } }; "
+                + "class Local {} } void go() {} }\n");
         assertThat(facts.types()).hasSize(1);
         assertThat(facts.types().get(0).fqn()).isEqualTo("A");
         assertThat(facts.types().get(0).packageName()).isEmpty();
-        assertThat(facts.members()).hasSize(1);
+        assertThat(facts.members()).hasSize(2);
+        assertThat(facts.calls().stream().filter(c -> c.calleeName().equals("go")).toList())
+                .hasSize(1).allMatch(c -> c.callerLocal() == 0);
     }
 
     @Test

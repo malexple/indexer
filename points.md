@@ -32,3 +32,12 @@
 - [x] Синтаксическая ошибка пишется в `index_errors` со стадией `PARSE`, а файл остаётся в `files` и FTS.
 - [x] Разбор идёт в пуле (парсер на поток), запись в одном потоке, id детерминированы.
 - [ ] `calls`, `type_deps` и `SymbolSolver` будут на этапе 4.
+
+## Чек-лист этапа 4
+
+- [x] `calls`: METHOD, NEW, CONSTRUCTOR_REF, METHOD_REF, с атрибуцией на ближайший член (поля и инициализаторы тоже члены).
+- [x] `type_deps`: IMPORT, EXTENDS, IMPLEMENTS, FIELD, PARAM, RETURN, NEW, CALL, ANNOTATION, без дубликатов.
+- [x] `SymbolSolver`: JDK + корни `src/main/java` и `src/test/java`, по своему набору на поток, любая ошибка даёт `resolved=0`.
+- [x] `--no-resolve`: всё `resolved=0`, но FQN из явных импортов сохраняется.
+- [x] `members.signature` в FQN, `callee_signature` в том же формате.
+- [ ] Не покрыто: `this(...)` и `super(...)`, вызовы через статические импорты без квалификатора, разрешение к типам из внешних jar (внешние JAR запрещены ТЗ).

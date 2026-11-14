@@ -9,6 +9,7 @@ import ru.mcs.indexer.files.GitInfo;
 import ru.mcs.indexer.files.GitRunner;
 import ru.mcs.indexer.files.SelectionResult;
 import ru.mcs.indexer.lang.LanguageRegistry;
+import ru.mcs.indexer.lang.java.SourceRoots;
 import ru.mcs.indexer.pipeline.FileIndexPipeline;
 import ru.mcs.indexer.util.Log;
 import ru.mcs.indexer.util.Versions;
@@ -44,7 +45,8 @@ public final class IndexerApp {
         log.info("Indexer " + Versions.indexer());
         log.info("root: " + options.root());
         log.info("out: " + options.out());
-        log.info("languages: " + String.join(",", options.languages()));
+        log.info("languages: " + String.join(",", options.languages())
+                + (options.noResolve() ? " (no symbol resolution)" : ""));
         if (options.incremental()) {
             log.warn("--incremental is not implemented yet (stage 6); performing a full index");
         }
@@ -54,9 +56,14 @@ public final class IndexerApp {
         log.info("selection: " + (selection.viaGit() ? "git ls-files" : "directory walk")
                 + ", selected=" + selection.files().size() + ", skipped=" + selection.skipped().size());
 
+        List<Path> sourceRoots = SourceRoots.discover(options.root(), selection.files());
+        for (Path sourceRoot : sourceRoots) {
+            log.debug("java source root: " + sourceRoot);
+        }
+
         GitInfo gitInfo = GitInfo.collect(git, options.root(), options.out());
         String runTimestamp = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
-        LanguageRegistry registry = LanguageRegistry.create(options);
+        LanguageRegistry registry = LanguageRegistry.create(options, sourceRoots);
 
         try (Db db = Db.open(options.out())) {
             Map<String, PriorFile> prior = db.loadPriorFiles();

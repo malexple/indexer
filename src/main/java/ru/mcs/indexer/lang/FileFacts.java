@@ -1,7 +1,9 @@
 package ru.mcs.indexer.lang;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Rows extracted from one file. Cross references use local indexes into these lists. */
 public final class FileFacts {
@@ -26,6 +28,14 @@ public final class FileFacts {
     public record AnnotationRow(String ownerKind, int ownerLocal, String name, String args, int line) {
     }
 
+    /** callerLocal is a local member index, or -1 when the call is outside any member. */
+    public record CallRow(int callerLocal, String callKind, String calleeName, String calleeOwnerFqn,
+                          String calleeSignature, boolean resolved, int line) {
+    }
+
+    public record DepRow(int typeLocal, String toFqn, String depKind, boolean resolved) {
+    }
+
     public record ErrorRow(String stage, String message) {
     }
 
@@ -34,6 +44,8 @@ public final class FileFacts {
     private final List<RelationRow> relations = new ArrayList<>();
     private final List<MemberRow> members = new ArrayList<>();
     private final List<AnnotationRow> annotations = new ArrayList<>();
+    private final List<CallRow> calls = new ArrayList<>();
+    private final Map<String, DepRow> deps = new LinkedHashMap<>();
     private final List<ErrorRow> errors = new ArrayList<>();
 
     public void addImport(ImportRow row) {
@@ -58,6 +70,19 @@ public final class FileFacts {
         annotations.add(row);
     }
 
+    public void addCall(CallRow row) {
+        calls.add(row);
+    }
+
+    /** Deduplicates by (type, kind, target); a resolved duplicate upgrades an unresolved one. */
+    public void addDep(int typeLocal, String toFqn, String depKind, boolean resolved) {
+        String key = typeLocal + "|" + depKind + "|" + toFqn;
+        DepRow existing = deps.get(key);
+        if (existing == null || (!existing.resolved() && resolved)) {
+            deps.put(key, new DepRow(typeLocal, toFqn, depKind, resolved));
+        }
+    }
+
     public void addError(String stage, String message) {
         errors.add(new ErrorRow(stage, message));
     }
@@ -80,6 +105,14 @@ public final class FileFacts {
 
     public List<AnnotationRow> annotations() {
         return annotations;
+    }
+
+    public List<CallRow> calls() {
+        return calls;
+    }
+
+    public List<DepRow> deps() {
+        return new ArrayList<>(deps.values());
     }
 
     public List<ErrorRow> errors() {
