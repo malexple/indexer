@@ -3,10 +3,12 @@ package ru.mcs.indexer;
 import ru.mcs.indexer.db.Db;
 import ru.mcs.indexer.db.IndexWriter;
 import ru.mcs.indexer.db.PriorFile;
+import ru.mcs.indexer.db.Schema;
 import ru.mcs.indexer.files.FileSelector;
 import ru.mcs.indexer.files.GitInfo;
 import ru.mcs.indexer.files.GitRunner;
 import ru.mcs.indexer.files.SelectionResult;
+import ru.mcs.indexer.lang.LanguageRegistry;
 import ru.mcs.indexer.pipeline.FileIndexPipeline;
 import ru.mcs.indexer.util.Log;
 import ru.mcs.indexer.util.Versions;
@@ -54,20 +56,20 @@ public final class IndexerApp {
 
         GitInfo gitInfo = GitInfo.collect(git, options.root(), options.out());
         String runTimestamp = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
+        LanguageRegistry registry = LanguageRegistry.create(options);
 
         try (Db db = Db.open(options.out())) {
             Map<String, PriorFile> prior = db.loadPriorFiles();
             db.wipeAllData();
             db.inTransaction(() -> {
-                db.putMeta("schema_version", String.valueOf(ru.mcs.indexer.db.Schema.VERSION));
+                db.putMeta("schema_version", String.valueOf(Schema.VERSION));
                 db.putMeta("notes", "indexing in progress");
             });
 
             FileIndexPipeline.Result result;
-            try (IndexWriter writer = new IndexWriter(db)) {
+            try (IndexWriter writer = new IndexWriter(db, !options.noSource())) {
                 writer.recordSkipped(selection.skipped());
-                result = FileIndexPipeline.run(selection.files(), writer, !options.noSource(),
-                        prior, runTimestamp, log);
+                result = FileIndexPipeline.run(selection.files(), registry, writer, prior, runTimestamp, log);
             }
             long afterWrite = System.nanoTime();
 
@@ -80,9 +82,8 @@ public final class IndexerApp {
             log.info("written=" + result.written() + ", failed=" + result.failed());
             if (options.stats()) {
                 printStats(db, log);
-                log.info("timings: select=" + ms(start, afterSelect)
-                        + " ms, write=" + ms(afterSelect, afterWrite)
-                        + " ms, fts=" + ms(afterWrite, afterFts)
+                log.info("timings: select=" + ms(start, afterSelect) + " ms, index+write="
+                        + ms(afterSelect, afterWrite) + " ms, fts=" + ms(afterWrite, afterFts)
                         + " ms, total(before vacuum)=" + ms(start, System.nanoTime()) + " ms");
             }
         } catch (SQLException e) {
@@ -104,7 +105,7 @@ public final class IndexerApp {
             throws SQLException {
         Path name = options.root().getFileName();
         Map<String, String> meta = new LinkedHashMap<>();
-        meta.put("schema_version", String.valueOf(ru.mcs.indexer.db.Schema.VERSION));
+        meta.put("schema_version", String.valueOf(Schema.VERSION));
         meta.put("indexer_version", Versions.indexer());
         meta.put("indexed_at", runTimestamp);
         meta.put("root_name", name == null ? options.root().toString() : name.toString());

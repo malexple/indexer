@@ -23,3 +23,12 @@
 - [x] Тесты: схема, идемпотентность, FTS, финальное состояние файла.
 - [ ] `files.module`: заполнит этап 5.
 - [ ] `--incremental`: этап 6.
+
+## Чек-лист этапа 3
+
+- [x] `types` (все пять видов, вложенные, `parent_type_id`, `fqn`, модификаторы, диапазоны с Javadoc, `doc_summary`).
+- [x] `members` (METHOD, CONSTRUCTOR, FIELD, ENUM_CONSTANT, RECORD_COMPONENT, INITIALIZER) и сигнатуры.
+- [x] `imports`, `annotations` (аргументы срезом исходника), `type_relations` без резолва.
+- [x] Синтаксическая ошибка пишется в `index_errors` со стадией `PARSE`, а файл остаётся в `files` и FTS.
+- [x] Разбор идёт в пуле (парсер на поток), запись в одном потоке, id детерминированы.
+- [ ] `calls`, `type_deps` и `SymbolSolver` будут на этапе 4.
