@@ -4,6 +4,7 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import ru.mcs.indexer.IndexerApp;
 import ru.mcs.indexer.IndexerOptions;
+import ru.mcs.indexer.QueriesDoc;
 import ru.mcs.indexer.util.Log;
 
 import java.io.IOException;
@@ -82,7 +83,9 @@ public final class IndexerCommand implements Callable<Integer> {
             log.error("error: " + e.getMessage());
             return 1;
         }
-        return IndexerApp.run(options, log);
+        int code = IndexerApp.run(options, log);
+        QueriesDoc.copyNextTo(options.out(), log);
+        return code;
     }
 
     private IndexerOptions buildOptions(Log log) {

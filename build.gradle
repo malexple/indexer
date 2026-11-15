@@ -8,13 +8,12 @@ group = 'ru.mcs.indexer'
 version = '1.1.0'
 
 repositories {
-    gradlePluginPortal()
     mavenCentral()
 }
 
 dependencies {
     implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.28.2'
-    implementation 'org.xerial:sqlite-jdbc:3.49.1.0'
+    implementation 'org.xerial:sqlite-jdbc:3.53.2.0'
     implementation 'info.picocli:picocli:4.7.7'
     implementation 'org.yaml:snakeyaml:2.6'
 
@@ -31,6 +30,11 @@ application {
 tasks.withType(JavaCompile).configureEach {
     options.release = 21
     options.encoding = 'UTF-8'
+}
+
+// QUERIES.md lives in the repository root and is shipped inside the jar (copied next to index.db at run time).
+tasks.named('processResources') {
+    from(layout.projectDirectory.file('QUERIES.md'))
 }
 
 tasks.named('test') {
@@ -53,6 +57,9 @@ tasks.named('shadowJar') {
                 'Implementation-Version': project.version.toString(),
                 'Multi-Release': 'true'
         )
+    }
+    from(layout.projectDirectory.files('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+        into 'META-INF'
     }
 }
 
