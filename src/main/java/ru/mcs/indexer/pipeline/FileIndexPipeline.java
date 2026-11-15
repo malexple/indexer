@@ -29,8 +29,12 @@ import java.util.concurrent.atomic.LongAdder;
 
 public final class FileIndexPipeline {
 
-    public record Result(int written, int failed) {
+    public record Result(int written, int failed, int unchanged) {
     }
+
+    private static final int WRITTEN = 0;
+    private static final int FAILED = 1;
+    private static final int UNCHANGED = 2;
 
     private static final class Timings {
         final LongAdder totalNanos = new LongAdder();
@@ -46,13 +50,14 @@ public final class FileIndexPipeline {
     }
 
     /**
-     * Workers read and parse files; the calling thread is the single DB writer and consumes results
-     * strictly in input order, which keeps row ids deterministic between runs.
+     * Workers read, hash and parse files; the calling thread is the single DB writer and consumes results
+     * strictly in input order, which keeps row ids deterministic between runs. In incremental mode a file
+     * whose SHA-256 equals the stored one is not parsed (except Gradle scripts, which feed the module model).
      * Profiling: -Dindexer.profile=true (with -v).
      */
     public static Result run(List<SelectedFile> files, LanguageRegistry registry, IndexWriter writer,
-                             Map<String, PriorFile> prior, String runTimestamp, Log log, int threads)
-            throws SQLException {
+                             Map<String, PriorFile> prior, String runTimestamp, Log log, int threads,
+                             boolean incremental) throws SQLException {
         int workers = Math.max(1, threads);
         int window = workers * 8;
         Timings timings = new Timings();
@@ -64,25 +69,16 @@ public final class FileIndexPipeline {
             return thread;
         });
         Deque<Future<LoadResult>> pending = new ArrayDeque<>();
-        int written = 0;
-        int failed = 0;
+        int[] counts = new int[3];
         try {
             for (SelectedFile file : files) {
-                pending.addLast(pool.submit(() -> process(file, registry, timings)));
+                pending.addLast(pool.submit(() -> process(file, registry, prior, incremental, timings)));
                 if (pending.size() >= window) {
-                    if (consume(pending.removeFirst(), writer, prior, runTimestamp, log)) {
-                        written++;
-                    } else {
-                        failed++;
-                    }
+                    counts[consume(pending.removeFirst(), writer, prior, runTimestamp, log, incremental)]++;
                 }
             }
             while (!pending.isEmpty()) {
-                if (consume(pending.removeFirst(), writer, prior, runTimestamp, log)) {
-                    written++;
-                } else {
-                    failed++;
-                }
+                counts[consume(pending.removeFirst(), writer, prior, runTimestamp, log, incremental)]++;
             }
         } finally {
             pool.shutdownNow();
@@ -91,7 +87,7 @@ public final class FileIndexPipeline {
             }
         }
         reportTimings(timings, workers, log);
-        return new Result(written, failed);
+        return new Result(counts[WRITTEN], counts[FAILED], counts[UNCHANGED]);
     }
 
     private static void reportTimings(Timings timings, int threads, Log log) {
@@ -104,29 +100,45 @@ public final class FileIndexPipeline {
         }
     }
 
-    private static LoadResult process(SelectedFile file, LanguageRegistry registry, Timings timings) {
+    private static LoadResult process(SelectedFile file, LanguageRegistry registry, Map<String, PriorFile> prior,
+                                      boolean incremental, Timings timings) {
         LoadResult result = FileLoader.load(file, true);
         if (!(result instanceof LoadResult.Loaded loaded)) {
             return result;
         }
+        LoadedFile data = loaded.file();
         Optional<LanguageIndexer> indexer = registry.forPath(file.path());
+        if (incremental) {
+            PriorFile previous = prior.get(data.path());
+            if (previous != null && previous.sha256().equals(data.sha256())) {
+                FileFacts gradleFacts = null;
+                if (data.lang().equals("gradle") && indexer.isPresent()) {
+                    gradleFacts = new FileFacts();
+                    runIndexer(indexer.get(), data, gradleFacts, timings);
+                }
+                return new LoadResult.Unchanged(data, gradleFacts);
+            }
+        }
         if (indexer.isEmpty()) {
             return result;
         }
         FileFacts facts = new FileFacts();
-        LoadedFile data = loaded.file();
+        runIndexer(indexer.get(), data, facts, timings);
+        return new LoadResult.Loaded(data, facts);
+    }
+
+    private static void runIndexer(LanguageIndexer indexer, LoadedFile data, FileFacts facts, Timings timings) {
         long started = System.nanoTime();
         try {
-            indexer.get().index(new FileContext(data.path(), data.content(), data.kind()), facts);
+            indexer.index(new FileContext(data.path(), data.content(), data.kind()), facts);
         } catch (RuntimeException | StackOverflowError e) {
             facts.addError("PARSE", "indexer failed: " + e);
         }
         timings.add(data.path(), System.nanoTime() - started);
-        return new LoadResult.Loaded(data, facts);
     }
 
-    private static boolean consume(Future<LoadResult> future, IndexWriter writer, Map<String, PriorFile> prior,
-                                   String runTimestamp, Log log) throws SQLException {
+    private static int consume(Future<LoadResult> future, IndexWriter writer, Map<String, PriorFile> prior,
+                               String runTimestamp, Log log, boolean incremental) throws SQLException {
         LoadResult result;
         try {
             result = future.get();
@@ -143,12 +155,19 @@ public final class FileIndexPipeline {
                 if (!ok) {
                     log.warn("DB error while writing " + file.path() + " (see index_errors)");
                 }
-                yield ok;
+                yield ok ? WRITTEN : FAILED;
+            }
+            case LoadResult.Unchanged unchanged -> {
+                writer.collectGradle(unchanged.file().path(), unchanged.facts());
+                yield UNCHANGED;
             }
             case LoadResult.Failed failure -> {
+                if (incremental) {
+                    writer.removeFiles(List.of(failure.path()));
+                }
                 writer.recordError(null, failure.path(), "READ", failure.message());
                 log.warn("cannot read " + failure.path() + ": " + failure.message());
-                yield false;
+                yield FAILED;
             }
         };
     }
