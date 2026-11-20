@@ -11,9 +11,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 public final class Db implements AutoCloseable {
 
@@ -35,6 +38,7 @@ public final class Db implements AutoCloseable {
     private final Path path;
     private final Connection connection;
     private boolean vacuumOnClose;
+    private String project;
 
     private Db(Path path, Connection connection) {
         this.path = path;
@@ -48,7 +52,6 @@ public final class Db implements AutoCloseable {
             Files.createDirectories(parent);
         }
         checkMagic(abs);
-
         Connection connection = DriverManager.getConnection("jdbc:sqlite:" + abs);
         Db db = new Db(abs, connection);
         try {
@@ -92,7 +95,7 @@ public final class Db implements AutoCloseable {
             throw new IllegalStateException(
                     "database has tables but no 'meta' table, not an Indexer database: " + path);
         }
-        String version = getMeta("schema_version");
+        String version = queryString("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1");
         if (!String.valueOf(Schema.VERSION).equals(version)) {
             throw new IllegalStateException("unsupported schema_version '" + version + "' (expected "
                     + Schema.VERSION + "); delete the file and run again: " + path);
@@ -104,6 +107,9 @@ public final class Db implements AutoCloseable {
             for (String statement : Schema.STATEMENTS) {
                 execute(statement);
             }
+            update("INSERT OR IGNORE INTO meta(scope, key, value) VALUES ('', 'db_id', ?)",
+                    UUID.randomUUID().toString());
+            update("INSERT OR IGNORE INTO meta(scope, key, value) VALUES ('', 'seq', '0')");
         });
     }
 
@@ -115,6 +121,24 @@ public final class Db implements AutoCloseable {
         return connection;
     }
 
+    /** Slug of the project this run works on; set by {@link #useProject(String)}. */
+    public String project() {
+        if (project == null) {
+            throw new IllegalStateException("no project selected, call useProject first");
+        }
+        return project;
+    }
+
+    /** Registers the project (if new) and makes it the scope of getMeta/putMeta, loadPriorFiles and wipeProject. */
+    public void useProject(String slug) throws SQLException {
+        if (!ProjectNames.isValid(slug)) {
+            throw new IllegalArgumentException("invalid project name: " + slug);
+        }
+        update("INSERT OR IGNORE INTO projects(slug, created_at) VALUES (?, ?)", slug,
+                Instant.now().truncatedTo(ChronoUnit.SECONDS).toString());
+        this.project = slug;
+    }
+
     public void setVacuumOnClose(boolean vacuumOnClose) {
         this.vacuumOnClose = vacuumOnClose;
     }
@@ -122,6 +146,13 @@ public final class Db implements AutoCloseable {
     public void execute(String sql) throws SQLException {
         try (Statement st = connection.createStatement()) {
             st.execute(sql);
+        }
+    }
+
+    public int update(String sql, Object... params) throws SQLException {
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            bind(ps, params);
+            return ps.executeUpdate();
         }
     }
 
@@ -149,6 +180,11 @@ public final class Db implements AutoCloseable {
         }
     }
 
+    /** Rows changed by this connection since it was opened; a before/after difference detects real changes. */
+    public long totalChanges() throws SQLException {
+        return queryLong("SELECT total_changes()");
+    }
+
     public void inTransaction(SqlWork work) throws SQLException {
         boolean previous = connection.getAutoCommit();
         if (!previous) {
@@ -171,37 +207,53 @@ public final class Db implements AutoCloseable {
         }
     }
 
+    /** Project-scoped meta value. */
     public String getMeta(String key) throws SQLException {
-        return queryString("SELECT value FROM meta WHERE key = ?", key);
+        return queryString("SELECT value FROM meta WHERE scope = ? AND key = ?", project(), key);
     }
 
     public void putMeta(String key, String value) throws SQLException {
-        try (PreparedStatement ps = connection.prepareStatement(
-                "INSERT INTO meta(key, value) VALUES (?, ?) "
-                        + "ON CONFLICT(key) DO UPDATE SET value = excluded.value")) {
-            ps.setString(1, key);
-            ps.setString(2, value);
-            ps.executeUpdate();
-        }
+        upsertMeta(project(), key, value);
+    }
+
+    /** Workspace-wide meta value (scope ''): schema_version, db_id, seq. */
+    public String getGlobalMeta(String key) throws SQLException {
+        return queryString("SELECT value FROM meta WHERE scope = '' AND key = ?", key);
+    }
+
+    /** Increments the workspace change counter that patches are chained on. */
+    public void bumpSeq() throws SQLException {
+        update("UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) "
+                + "WHERE scope = '' AND key = 'seq'");
+    }
+
+    private void upsertMeta(String scope, String key, String value) throws SQLException {
+        update("INSERT INTO meta(scope, key, value) VALUES (?, ?, ?) "
+                + "ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value", scope, key, value);
     }
 
     public Map<String, PriorFile> loadPriorFiles() throws SQLException {
         Map<String, PriorFile> result = new HashMap<>();
-        try (Statement st = connection.createStatement();
-             ResultSet rs = st.executeQuery("SELECT path, sha256, indexed_at FROM files")) {
-            while (rs.next()) {
-                result.put(rs.getString(1), new PriorFile(rs.getString(2), rs.getString(3)));
+        try (PreparedStatement ps = connection.prepareStatement(
+                "SELECT path, sha256, indexed_at FROM files WHERE project_id = ?")) {
+            ps.setString(1, project());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.put(rs.getString(1), new PriorFile(rs.getString(2), rs.getString(3)));
+                }
             }
         }
         return result;
     }
 
-    public void wipeAllData() throws SQLException {
+    /** Removes every row of the current project (and its meta) without touching other projects. */
+    public void wipeProject() throws SQLException {
+        String slug = project();
         execute("PRAGMA foreign_keys = OFF");
         try {
             inTransaction(() -> {
-                for (String table : Schema.WIPE_ORDER) {
-                    execute("DELETE FROM " + table);
+                for (String sql : Schema.WIPE_PROJECT) {
+                    update(sql, slug);
                 }
             });
         } finally {

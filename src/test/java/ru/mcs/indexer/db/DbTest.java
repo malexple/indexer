@@ -22,7 +22,7 @@ class DbTest {
     Path tmp;
 
     private static final List<String> TABLES = List.of(
-            "meta", "files", "gradle_modules", "gradle_deps", "java_modules", "module_directives",
+            "meta", "projects", "files", "gradle_modules", "gradle_deps", "java_modules", "module_directives",
             "types", "type_relations", "members", "annotations", "imports", "calls", "type_deps",
             "config_entries", "index_errors", "code_fts");
 
@@ -46,7 +46,10 @@ class DbTest {
                 assertThat(db.queryLong("SELECT COUNT(*) FROM sqlite_master WHERE name = ?", table))
                         .as(table).isEqualTo(1);
             }
-            assertThat(db.getMeta("schema_version")).isEqualTo("1");
+            assertThat(db.getGlobalMeta("schema_version")).isEqualTo(String.valueOf(Schema.VERSION));
+            assertThat(db.getGlobalMeta("schema_version")).isEqualTo("2");
+            assertThat(db.getGlobalMeta("db_id")).isNotBlank();
+            assertThat(db.getGlobalMeta("seq")).isEqualTo("0");
         }
         assertThat(file).exists();
         assertThat(sibling(file, "-wal")).doesNotExist();
@@ -61,12 +64,54 @@ class DbTest {
     @Test
     void reopeningKeepsDataAndIsIdempotent() throws Exception {
         Path file = tmp.resolve("index.db");
+        String dbId;
         try (Db db = Db.open(file)) {
+            db.useProject("test");
             db.putMeta("custom", "value");
+            dbId = db.getGlobalMeta("db_id");
         }
         try (Db db = Db.open(file)) {
+            db.useProject("test");
             assertThat(db.getMeta("custom")).isEqualTo("value");
-            assertThat(db.getMeta("schema_version")).isEqualTo("1");
+            assertThat(db.getGlobalMeta("schema_version")).isEqualTo("2");
+            assertThat(db.getGlobalMeta("db_id")).isEqualTo(dbId);
+            assertThat(db.queryLong("SELECT COUNT(*) FROM projects WHERE slug = 'test'")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void projectMetaIsScopedAndDoesNotLeakBetweenProjects() throws Exception {
+        try (Db db = Db.open(tmp.resolve("index.db"))) {
+            db.useProject("one");
+            db.putMeta("k", "1");
+            db.useProject("two");
+            assertThat(db.getMeta("k")).isNull();
+            db.putMeta("k", "2");
+            db.useProject("one");
+            assertThat(db.getMeta("k")).isEqualTo("1");
+            assertThat(db.getGlobalMeta("k")).isNull();
+        }
+    }
+
+    @Test
+    void seqStartsAtZeroAndBumps() throws Exception {
+        try (Db db = Db.open(tmp.resolve("index.db"))) {
+            assertThat(db.getGlobalMeta("seq")).isEqualTo("0");
+            db.bumpSeq();
+            db.bumpSeq();
+            assertThat(db.getGlobalMeta("seq")).isEqualTo("2");
+        }
+    }
+
+    @Test
+    void projectMustBeSelectedAndNameValidated() throws Exception {
+        try (Db db = Db.open(tmp.resolve("index.db"))) {
+            assertThatThrownBy(db::project).isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> db.getMeta("k")).isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> db.useProject("bad name")).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> db.useProject("")).isInstanceOf(IllegalArgumentException.class);
+            db.useProject("good-name_1.0");
+            assertThat(db.project()).isEqualTo("good-name_1.0");
         }
     }
 
@@ -89,10 +134,24 @@ class DbTest {
     }
 
     @Test
+    void refusesOlderSchemaVersion() throws Exception {
+        Path file = tmp.resolve("old.db");
+        try (Connection c = DriverManager.getConnection("jdbc:sqlite:" + file);
+             Statement st = c.createStatement()) {
+            st.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+            st.execute("INSERT INTO meta(key, value) VALUES ('schema_version', '1')");
+        }
+        assertThatThrownBy(() -> Db.open(file))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("unsupported schema_version '1'");
+    }
+
+    @Test
     void transactionRollsBackOnFailure() throws Exception {
         try (Db db = Db.open(tmp.resolve("index.db"))) {
+            db.useProject("test");
             assertThatThrownBy(() -> db.inTransaction(() -> {
-                db.execute("INSERT INTO meta(key, value) VALUES ('k', 'v')");
+                db.execute("INSERT INTO meta(scope, key, value) VALUES ('test', 'k', 'v')");
                 throw new SQLException("boom");
             })).isInstanceOf(SQLException.class);
             assertThat(db.getMeta("k")).isNull();
@@ -103,18 +162,44 @@ class DbTest {
     @Test
     void foreignKeysAreEnforcedAndCascade() throws Exception {
         try (Db db = Db.open(tmp.resolve("index.db"))) {
+            db.useProject("test");
             assertThatThrownBy(() -> db.execute(
                     "INSERT INTO types(file_id, fqn, simple_name, package, kind, line_from, line_to) "
                             + "VALUES (999, 'a.B', 'B', 'a', 'CLASS', 1, 2)"))
                     .isInstanceOf(SQLException.class);
+            assertThatThrownBy(() -> db.execute(
+                    "INSERT INTO files(project_id, path, size_bytes, line_count, sha256, indexed_at) "
+                            + "VALUES ('missing', 'a', 1, 1, 'x', 't')"))
+                    .isInstanceOf(SQLException.class);
 
-            db.execute("INSERT INTO files(path, size_bytes, line_count, sha256, indexed_at) "
-                    + "VALUES ('a', 1, 1, 'x', 't')");
+            db.execute("INSERT INTO files(project_id, path, size_bytes, line_count, sha256, indexed_at) "
+                    + "VALUES ('test', 'a', 1, 1, 'x', 't')");
             db.execute("INSERT INTO types(file_id, fqn, simple_name, package, kind, line_from, line_to) "
                     + "VALUES (1, 'a.B', 'B', 'a', 'CLASS', 1, 2)");
             assertThat(db.queryLong("SELECT COUNT(*) FROM types")).isEqualTo(1);
             db.execute("DELETE FROM files");
             assertThat(db.queryLong("SELECT COUNT(*) FROM types")).isZero();
+        }
+    }
+
+    @Test
+    void deletingProjectCascadesToItsData() throws Exception {
+        try (Db db = Db.open(tmp.resolve("index.db"))) {
+            db.useProject("one");
+            db.useProject("two");
+            for (String slug : List.of("one", "two")) {
+                db.execute("INSERT INTO files(project_id, path, size_bytes, line_count, sha256, indexed_at) "
+                        + "VALUES ('" + slug + "', 'a', 1, 1, 'x', 't')");
+            }
+            db.execute("INSERT INTO types(file_id, fqn, simple_name, package, kind, line_from, line_to) "
+                    + "SELECT id, 'a.B', 'B', 'a', 'CLASS', 1, 2 FROM files");
+            assertThat(db.queryLong("SELECT COUNT(*) FROM types")).isEqualTo(2);
+
+            db.execute("DELETE FROM projects WHERE slug = 'one'");
+
+            assertThat(db.queryLong("SELECT COUNT(*) FROM files")).isEqualTo(1);
+            assertThat(db.queryLong("SELECT COUNT(*) FROM types")).isEqualTo(1);
+            assertThat(db.queryLong("SELECT COUNT(*) FROM files WHERE project_id = 'two'")).isEqualTo(1);
         }
     }
 }

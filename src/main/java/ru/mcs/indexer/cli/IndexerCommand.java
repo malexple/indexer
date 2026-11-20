@@ -6,6 +6,7 @@ import ru.mcs.indexer.IndexerApp;
 import ru.mcs.indexer.IndexerOptions;
 import ru.mcs.indexer.QueriesDoc;
 import ru.mcs.indexer.util.Log;
+import ru.mcs.indexer.db.ProjectNames;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -22,6 +23,7 @@ import java.util.concurrent.Callable;
         mixinStandardHelpOptions = true,
         versionProvider = VersionProvider.class,
         sortOptions = false,
+        subcommands = {ApplyCommand.class, DiffCommand.class},
         description = "Indexes a project directory into a single SQLite file for AI assistants.")
 public final class IndexerCommand implements Callable<Integer> {
 
@@ -64,6 +66,16 @@ public final class IndexerCommand implements Callable<Integer> {
 
     @Option(names = {"-v", "--verbose"}, description = "Verbose log.")
     private boolean verbose;
+
+    @Option(names = {"-p", "--project"}, paramLabel = "NAME",
+            description = "Project name inside the database (default: root directory name). "
+                    + "Use the same --out with different names to keep several projects in one index.")
+    private String project;
+
+    @Option(names = "--patch-dir", paramLabel = "DIR",
+            description = "Also write patch-<from>-<to>.sql.gz here: the changes of this run relative to the "
+                    + "database as it was before the run.")
+    private Path patchDir;
 
     public boolean isVerbose() {
         return verbose;
@@ -143,7 +155,12 @@ public final class IndexerCommand implements Callable<Integer> {
             }
         }
 
+        if (project != null && !ProjectNames.isValid(project)) {
+            throw new IllegalArgumentException("--project must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}, got '"
+                    + project + "'");
+        }
+
         return new IndexerOptions(rootAbs, outAbs, langs, Set.copyOf(extensions), List.copyOf(excl),
-                maxFileKb, incremental, noSource, noResolve, stats, verbose);
+                maxFileKb, incremental, noSource, noResolve, stats, verbose, project, patchDir == null ? null : patchDir.toAbsolutePath().normalize());
     }
 }

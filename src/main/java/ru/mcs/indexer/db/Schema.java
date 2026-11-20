@@ -4,23 +4,50 @@ import java.util.List;
 
 public final class Schema {
 
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
-    public static final List<String> WIPE_ORDER = List.of(
-            "index_errors", "type_deps", "calls", "annotations", "imports", "config_entries",
-            "type_relations", "members", "types", "module_directives", "java_modules",
-            "gradle_deps", "gradle_modules", "files", "meta");
+    private static final String PROJECT_FILES = "SELECT id FROM files WHERE project_id = ?";
+
+    /** Every statement takes exactly one parameter: the project slug. Run with foreign_keys = OFF. */
+    public static final List<String> WIPE_PROJECT = List.of(
+            "DELETE FROM index_errors WHERE project_id = ?",
+            "DELETE FROM type_deps WHERE from_type_id IN "
+                    + "(SELECT id FROM types WHERE file_id IN (" + PROJECT_FILES + "))",
+            "DELETE FROM calls WHERE file_id IN (" + PROJECT_FILES + ")",
+            "DELETE FROM annotations WHERE file_id IN (" + PROJECT_FILES + ")",
+            "DELETE FROM imports WHERE file_id IN (" + PROJECT_FILES + ")",
+            "DELETE FROM config_entries WHERE file_id IN (" + PROJECT_FILES + ")",
+            "DELETE FROM type_relations WHERE type_id IN "
+                    + "(SELECT id FROM types WHERE file_id IN (" + PROJECT_FILES + "))",
+            "DELETE FROM members WHERE file_id IN (" + PROJECT_FILES + ")",
+            "DELETE FROM types WHERE file_id IN (" + PROJECT_FILES + ")",
+            "DELETE FROM module_directives WHERE java_module_id IN "
+                    + "(SELECT id FROM java_modules WHERE file_id IN (" + PROJECT_FILES + "))",
+            "DELETE FROM java_modules WHERE file_id IN (" + PROJECT_FILES + ")",
+            "DELETE FROM gradle_deps WHERE module_id IN "
+                    + "(SELECT id FROM gradle_modules WHERE project_id = ?)",
+            "DELETE FROM gradle_modules WHERE project_id = ?",
+            "DELETE FROM files WHERE project_id = ?",
+            "DELETE FROM meta WHERE scope = ?");
 
     public static final List<String> STATEMENTS = List.of(
             """
             CREATE TABLE IF NOT EXISTS meta (
-              key TEXT PRIMARY KEY,
-              value TEXT NOT NULL
+              scope TEXT NOT NULL,
+              key TEXT NOT NULL,
+              value TEXT NOT NULL,
+              PRIMARY KEY (scope, key)
+            )""",
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+              slug TEXT PRIMARY KEY,
+              created_at TEXT NOT NULL
             )""",
             """
             CREATE TABLE IF NOT EXISTS files (
               id INTEGER PRIMARY KEY,
-              path TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+              path TEXT NOT NULL,
               module TEXT,
               lang TEXT,
               kind TEXT,
@@ -28,16 +55,19 @@ public final class Schema {
               line_count INTEGER NOT NULL,
               sha256 TEXT NOT NULL,
               content TEXT,
-              indexed_at TEXT NOT NULL
+              indexed_at TEXT NOT NULL,
+              UNIQUE (project_id, path)
             )""",
             "CREATE INDEX IF NOT EXISTS idx_files_module ON files(module)",
             "CREATE INDEX IF NOT EXISTS idx_files_lang_kind ON files(lang, kind)",
             """
             CREATE TABLE IF NOT EXISTS gradle_modules (
               id INTEGER PRIMARY KEY,
-              name TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+              name TEXT NOT NULL,
               dir TEXT NOT NULL,
-              build_file TEXT
+              build_file TEXT,
+              UNIQUE (project_id, name)
             )""",
             """
             CREATE TABLE IF NOT EXISTS gradle_deps (
@@ -177,19 +207,21 @@ public final class Schema {
             """
             CREATE TABLE IF NOT EXISTS index_errors (
               id INTEGER PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
               file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
               path TEXT NOT NULL,
               stage TEXT NOT NULL,
               message TEXT NOT NULL
             )""",
             "CREATE INDEX IF NOT EXISTS idx_errors_file ON index_errors(file_id)",
+            "CREATE INDEX IF NOT EXISTS idx_errors_project ON index_errors(project_id)",
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
               path, content,
               content='files', content_rowid='id',
               tokenize="unicode61 tokenchars '_'"
             )""",
-            "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '" + VERSION + "')"
+            "INSERT OR IGNORE INTO meta(scope, key, value) VALUES ('', 'schema_version', '" + VERSION + "')"
     );
 
     private Schema() {

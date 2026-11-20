@@ -5,6 +5,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * @param project  name of the project inside the database; null means "derive from the root directory name"
+ * @param patchDir directory for patch-FROM-TO.sql.gz written after the run; null means "do not write a patch"
+ */
 public record IndexerOptions(
         Path root,
         Path out,
@@ -16,7 +20,9 @@ public record IndexerOptions(
         boolean noSource,
         boolean noResolve,
         boolean stats,
-        boolean verbose) {
+        boolean verbose,
+        String project,
+        Path patchDir) {
 
     public static final Set<String> DEFAULT_EXTENSIONS = Set.of(
             "java", "gradle", "kts", "properties", "yml", "yaml", "json",
@@ -31,4 +37,18 @@ public record IndexerOptions(
             "javascript", Set.of("js", "mjs", "cjs"),
             "zig", Set.of("zig"),
             "kotlin", Set.of("kt"));
+
+    public IndexerOptions(Path root, Path out, Set<String> languages, Set<String> extensions,
+                          List<String> excludes, int maxFileKb, boolean incremental, boolean noSource,
+                          boolean noResolve, boolean stats, boolean verbose) {
+        this(root, out, languages, extensions, excludes, maxFileKb, incremental, noSource, noResolve, stats,
+                verbose, null, null);
+    }
+
+    public IndexerOptions(Path root, Path out, Set<String> languages, Set<String> extensions,
+                          List<String> excludes, int maxFileKb, boolean incremental, boolean noSource,
+                          boolean noResolve, boolean stats, boolean verbose, String project) {
+        this(root, out, languages, extensions, excludes, maxFileKb, incremental, noSource, noResolve, stats,
+                verbose, project, null);
+    }
 }

@@ -117,7 +117,7 @@ class IndexerAppTest {
                             List.of("SKIP_BINARY", "bin.txt", 1),
                             List.of("SKIP_SIZE", "big.txt", 1));
 
-            assertThat(dump(c, "SELECT value FROM meta WHERE key = 'schema_version'")).containsExactly(List.of("1"));
+            assertThat(dump(c, "SELECT value FROM meta WHERE key = 'schema_version'")).containsExactly(List.of("2"));
             assertThat(dump(c, "SELECT value FROM meta WHERE key = 'file_count'")).containsExactly(List.of("3"));
             assertThat(dump(c, "SELECT value FROM meta WHERE key = 'error_count'")).containsExactly(List.of("3"));
             assertThat(dump(c, "SELECT value FROM meta WHERE key = 'source_included'")).containsExactly(List.of("1"));
@@ -159,13 +159,13 @@ class IndexerAppTest {
         try (Connection c = connect()) {
             files1 = dump(c, "SELECT * FROM files ORDER BY id");
             errors1 = dump(c, "SELECT * FROM index_errors ORDER BY id");
-            meta1 = dump(c, "SELECT key, value FROM meta WHERE key <> 'indexed_at' ORDER BY key");
+            meta1 = dump(c, "SELECT key, value FROM meta WHERE key NOT IN ('indexed_at', 'seq') ORDER BY key");
         }
         run(false);
         try (Connection c = connect()) {
             assertThat(dump(c, "SELECT * FROM files ORDER BY id")).isEqualTo(files1);
             assertThat(dump(c, "SELECT * FROM index_errors ORDER BY id")).isEqualTo(errors1);
-            assertThat(dump(c, "SELECT key, value FROM meta WHERE key <> 'indexed_at' ORDER BY key"))
+            assertThat(dump(c, "SELECT key, value FROM meta WHERE key NOT IN ('indexed_at', 'seq') ORDER BY key"))
                     .isEqualTo(meta1);
         }
     }

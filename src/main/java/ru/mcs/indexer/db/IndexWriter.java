@@ -13,13 +13,14 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * Single-threaded writer. In incremental mode it also maintains the external-content FTS index: the old
- * row is sent to FTS 'delete' (with its stored values) BEFORE the files row changes, the new values are
- * added after the insert, all in the same transaction.
+ * Single-threaded writer for the project selected on the Db. In incremental mode it also maintains the
+ * external-content FTS index: the old row is sent to FTS 'delete' (with its stored values) BEFORE the files
+ * row changes, the new values are added after the insert, all in the same transaction.
  */
 public final class IndexWriter implements AutoCloseable {
 
     private final Db db;
+    private final String project;
     private final boolean storeContent;
     private final boolean incremental;
     private final PreparedStatement insertFile;
@@ -39,14 +40,16 @@ public final class IndexWriter implements AutoCloseable {
 
     public IndexWriter(Db db, boolean storeContent, boolean incremental) throws SQLException {
         this.db = db;
+        this.project = db.project();
         this.storeContent = storeContent;
         this.incremental = incremental;
         Connection c = db.connection();
-        insertFile = c.prepareStatement("INSERT INTO files(path, module, lang, kind, size_bytes, line_count, "
-                + "sha256, content, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        insertError = c.prepareStatement("INSERT INTO index_errors(file_id, path, stage, message) VALUES (?, ?, ?, ?)");
+        insertFile = c.prepareStatement("INSERT INTO files(project_id, path, module, lang, kind, size_bytes, "
+                + "line_count, sha256, content, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        insertError = c.prepareStatement(
+                "INSERT INTO index_errors(project_id, file_id, path, stage, message) VALUES (?, ?, ?, ?, ?)");
         lastId = c.prepareStatement("SELECT last_insert_rowid()");
-        selectOld = c.prepareStatement("SELECT id, content FROM files WHERE path = ?");
+        selectOld = c.prepareStatement("SELECT id, content FROM files WHERE project_id = ? AND path = ?");
         deleteFile = c.prepareStatement("DELETE FROM files WHERE id = ?");
         ftsDelete = c.prepareStatement(
                 "INSERT INTO code_fts(code_fts, rowid, path, content) VALUES ('delete', ?, ?, ?)");
@@ -68,15 +71,16 @@ public final class IndexWriter implements AutoCloseable {
                     removeExisting(file.path());
                 }
                 String stored = storeContent ? file.content() : null;
-                insertFile.setString(1, file.path());
-                insertFile.setNull(2, Types.VARCHAR);
-                insertFile.setString(3, file.lang());
-                insertFile.setString(4, file.kind());
-                insertFile.setLong(5, file.sizeBytes());
-                insertFile.setInt(6, file.lineCount());
-                insertFile.setString(7, file.sha256());
-                setNullable(insertFile, 8, stored);
-                insertFile.setString(9, indexedAt);
+                insertFile.setString(1, project);
+                insertFile.setString(2, file.path());
+                insertFile.setNull(3, Types.VARCHAR);
+                insertFile.setString(4, file.lang());
+                insertFile.setString(5, file.kind());
+                insertFile.setLong(6, file.sizeBytes());
+                insertFile.setInt(7, file.lineCount());
+                insertFile.setString(8, file.sha256());
+                setNullable(insertFile, 9, stored);
+                insertFile.setString(10, indexedAt);
                 insertFile.executeUpdate();
                 long fileId = lastInsertId();
                 if (incremental) {
@@ -147,7 +151,8 @@ public final class IndexWriter implements AutoCloseable {
     private boolean removeExisting(String path) throws SQLException {
         long id;
         String content;
-        selectOld.setString(1, path);
+        selectOld.setString(1, project);
+        selectOld.setString(2, path);
         try (ResultSet rs = selectOld.executeQuery()) {
             if (!rs.next()) {
                 return false;
@@ -165,14 +170,15 @@ public final class IndexWriter implements AutoCloseable {
     }
 
     private void bindError(Long fileId, String path, String stage, String message) throws SQLException {
+        insertError.setString(1, project);
         if (fileId == null) {
-            insertError.setNull(1, Types.INTEGER);
+            insertError.setNull(2, Types.INTEGER);
         } else {
-            insertError.setLong(1, fileId);
+            insertError.setLong(2, fileId);
         }
-        insertError.setString(2, path);
-        insertError.setString(3, stage);
-        insertError.setString(4, message);
+        insertError.setString(3, path);
+        insertError.setString(4, stage);
+        insertError.setString(5, message);
         insertError.executeUpdate();
     }
 

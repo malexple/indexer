@@ -5,8 +5,8 @@ import ru.mcs.indexer.lang.FileFacts;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,10 +16,11 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
- * Collects Gradle facts of all files, then rewrites gradle_modules and gradle_deps and refreshes
- * files.module in one transaction once every file is in the database. The three are derived data, so each
- * run recomputes them (also in incremental mode); files.module is touched only where the value changes,
- * because updating a row rewrites its (possibly large) content. Single writer thread only.
+ * Collects Gradle facts of all files, then brings gradle_modules and gradle_deps of the current project in line
+ * with them and refreshes files.module, in one transaction once every file is in the database. The tables are
+ * derived data, recomputed on each run, but rewritten only when their logical content changed, so row ids stay
+ * stable (and patches stay small). Dependencies are sorted for the same reason. files.module is touched only
+ * where the value changes, because updating a row rewrites its (possibly large) content. Single writer thread only.
  */
 final class GradleRegistry {
 
@@ -28,6 +29,19 @@ final class GradleRegistry {
 
     private record FileModule(long id, String path, String module) {
     }
+
+    private record ModuleRow(String name, String dir, String buildFile) {
+    }
+
+    private record DepRow(String module, String config, String depKind, String target, int line) {
+    }
+
+    private static final Comparator<DepRow> DEP_ORDER = Comparator
+            .comparing(DepRow::module)
+            .thenComparing(DepRow::config)
+            .thenComparing(DepRow::depKind)
+            .thenComparing(DepRow::target)
+            .thenComparingInt(DepRow::line);
 
     private final Set<String> includeDirs = new TreeSet<>();
     private final Map<String, String> buildFiles = new TreeMap<>();
@@ -76,7 +90,6 @@ final class GradleRegistry {
                 }
             }
         }
-
         Map<String, String> nameByDir = new LinkedHashMap<>();
         if (hasRoot) {
             String name = rootName != null ? rootName : defaultRootName;
@@ -89,41 +102,85 @@ final class GradleRegistry {
             nameByDir.put(dir, dir);
         }
 
+        List<ModuleRow> wantModules = new ArrayList<>();
+        for (Map.Entry<String, String> entry : nameByDir.entrySet()) {
+            wantModules.add(new ModuleRow(entry.getValue(), entry.getKey().isEmpty() ? "." : entry.getKey(),
+                    buildFiles.get(entry.getKey())));
+        }
+        List<DepRow> wantDeps = new ArrayList<>();
+        for (Dep dep : deps) {
+            String owner = nearestModule(dep.moduleDir(), nameByDir.keySet());
+            if (owner == null) {
+                continue;
+            }
+            FileFacts.GradleDepRow row = dep.row();
+            wantDeps.add(new DepRow(nameByDir.get(owner), row.config(), row.depKind(), row.target(), row.line()));
+        }
+        wantDeps.sort(DEP_ORDER);
+
         db.inTransaction(() -> {
-            db.execute("DELETE FROM gradle_deps");
-            db.execute("DELETE FROM gradle_modules");
-            writeModules(db, nameByDir);
+            if (!wantModules.equals(readModules(db)) || !wantDeps.equals(readDeps(db))) {
+                rewrite(db, wantModules, wantDeps);
+            }
             refreshFileModules(db, nameByDir);
         });
     }
 
-    private void writeModules(Db db, Map<String, String> nameByDir) throws SQLException {
-        if (nameByDir.isEmpty()) {
-            return;
+    private static List<ModuleRow> readModules(Db db) throws SQLException {
+        List<ModuleRow> rows = new ArrayList<>();
+        try (PreparedStatement ps = db.connection().prepareStatement(
+                "SELECT name, dir, build_file FROM gradle_modules WHERE project_id = ? ORDER BY id")) {
+            ps.setString(1, db.project());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new ModuleRow(rs.getString(1), rs.getString(2), rs.getString(3)));
+                }
+            }
         }
-        Map<String, Long> idByDir = new LinkedHashMap<>();
+        return rows;
+    }
+
+    private static List<DepRow> readDeps(Db db) throws SQLException {
+        List<DepRow> rows = new ArrayList<>();
+        try (PreparedStatement ps = db.connection().prepareStatement(
+                "SELECT m.name, d.config, d.dep_kind, d.target, d.line FROM gradle_deps d "
+                        + "JOIN gradle_modules m ON m.id = d.module_id WHERE m.project_id = ? ORDER BY d.id")) {
+            ps.setString(1, db.project());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new DepRow(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                            rs.getInt(5)));
+                }
+            }
+        }
+        return rows;
+    }
+
+    private static void rewrite(Db db, List<ModuleRow> modules, List<DepRow> depRows) throws SQLException {
+        String project = db.project();
+        db.update("DELETE FROM gradle_deps WHERE module_id IN (SELECT id FROM gradle_modules WHERE project_id = ?)",
+                project);
+        db.update("DELETE FROM gradle_modules WHERE project_id = ?", project);
+        Map<String, Long> idByName = new LinkedHashMap<>();
         try (PreparedStatement insert = db.connection().prepareStatement(
-                "INSERT INTO gradle_modules(name, dir, build_file) VALUES (?,?,?)")) {
-            for (Map.Entry<String, String> entry : nameByDir.entrySet()) {
-                insert.setString(1, entry.getValue());
-                insert.setString(2, entry.getKey().isEmpty() ? "." : entry.getKey());
-                insert.setString(3, buildFiles.get(entry.getKey()));
+                "INSERT INTO gradle_modules(project_id, name, dir, build_file) VALUES (?,?,?,?)")) {
+            for (ModuleRow module : modules) {
+                insert.setString(1, project);
+                insert.setString(2, module.name());
+                insert.setString(3, module.dir());
+                insert.setString(4, module.buildFile());
                 insert.executeUpdate();
-                idByDir.put(entry.getKey(), db.queryLong("SELECT last_insert_rowid()"));
+                idByName.put(module.name(), db.queryLong("SELECT last_insert_rowid()"));
             }
         }
         try (PreparedStatement insert = db.connection().prepareStatement(
                 "INSERT INTO gradle_deps(module_id, config, dep_kind, target, line) VALUES (?,?,?,?,?)")) {
-            for (Dep dep : deps) {
-                String owner = nearestModule(dep.moduleDir(), nameByDir.keySet());
-                if (owner == null) {
-                    continue;
-                }
-                insert.setLong(1, idByDir.get(owner));
-                insert.setString(2, dep.row().config());
-                insert.setString(3, dep.row().depKind());
-                insert.setString(4, dep.row().target());
-                insert.setInt(5, dep.row().line());
+            for (DepRow dep : depRows) {
+                insert.setLong(1, idByName.get(dep.module()));
+                insert.setString(2, dep.config());
+                insert.setString(3, dep.depKind());
+                insert.setString(4, dep.target());
+                insert.setInt(5, dep.line());
                 insert.addBatch();
             }
             insert.executeBatch();
@@ -132,10 +189,13 @@ final class GradleRegistry {
 
     private static void refreshFileModules(Db db, Map<String, String> nameByDir) throws SQLException {
         List<FileModule> files = new ArrayList<>();
-        try (Statement st = db.connection().createStatement();
-             ResultSet rs = st.executeQuery("SELECT id, path, module FROM files ORDER BY id")) {
-            while (rs.next()) {
-                files.add(new FileModule(rs.getLong(1), rs.getString(2), rs.getString(3)));
+        try (PreparedStatement ps = db.connection().prepareStatement(
+                "SELECT id, path, module FROM files WHERE project_id = ? ORDER BY id")) {
+            ps.setString(1, db.project());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    files.add(new FileModule(rs.getLong(1), rs.getString(2), rs.getString(3)));
+                }
             }
         }
         try (PreparedStatement update = db.connection().prepareStatement("UPDATE files SET module = ? WHERE id = ?")) {

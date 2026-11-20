@@ -41,16 +41,20 @@ class QueriesDocTest {
     }
 
     @Test
-    void documentHasAllFifteenSectionsAndTheAssistantRules() throws IOException {
+    void documentHasAllSixteenSectionsAndTheAssistantRules() throws IOException {
         String text = document();
         Matcher headings = Pattern.compile("(?m)^## (\\d+)\\.").matcher(text);
         List<Integer> numbers = new ArrayList<>();
         while (headings.find()) {
             numbers.add(Integer.parseInt(headings.group(1)));
         }
-        assertThat(numbers).containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-        assertThat(text).contains("first `meta`, then find the type", "double quotes", "lines[line_from - 1:line_to]"
-                .replace("lines[", "lines[")).contains("## Schema in short");
+        assertThat(numbers).containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+        assertThat(text).contains(
+                "first `meta` and `projects`, then find the type",
+                "double quotes",
+                "lines[line_from - 1:line_to]",
+                "## Schema in short",
+                "## 16. Several projects in one database");
     }
 
     @Test

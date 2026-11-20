@@ -3,7 +3,7 @@ package ru.mcs.indexer;
 import ru.mcs.indexer.db.Db;
 import ru.mcs.indexer.db.IndexWriter;
 import ru.mcs.indexer.db.PriorFile;
-import ru.mcs.indexer.db.Schema;
+import ru.mcs.indexer.db.ProjectNames;
 import ru.mcs.indexer.files.FileSelector;
 import ru.mcs.indexer.files.GitInfo;
 import ru.mcs.indexer.files.GitRunner;
@@ -19,6 +19,8 @@ import ru.mcs.indexer.util.Versions;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -30,6 +32,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.Optional;
+import ru.mcs.indexer.patch.PatchWriter;
 
 public final class IndexerApp {
 
@@ -79,8 +83,23 @@ public final class IndexerApp {
         LanguageRegistry registry = LanguageRegistry.create(options, sourceRoots);
         Path rootFileName = options.root().getFileName();
         String rootName = rootFileName == null ? "root" : rootFileName.toString();
+        String project = options.project() != null ? options.project() : ProjectNames.fromDirectoryName(rootName);
+
+        Path baseSnapshot = null;
+        if (options.patchDir() != null) {
+            if (Files.isRegularFile(options.out()) && Files.size(options.out()) > 0) {
+                baseSnapshot = Files.createTempFile(options.out().toAbsolutePath().getParent(), "indexer-base-", ".db");
+                baseSnapshot.toFile().deleteOnExit();
+                Files.copy(options.out(), baseSnapshot, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                log.warn("--patch-dir: there is no previous database, so no patch can be built; "
+                        + "upload the full database instead");
+            }
+        }
 
         try (Db db = Db.open(options.out())) {
+            db.useProject(project);
+            log.info("project: " + project);
             boolean incremental = false;
             if (options.incremental()) {
                 String blocker = incrementalBlocker(db, options);
@@ -92,16 +111,13 @@ public final class IndexerApp {
             }
             Map<String, PriorFile> prior = db.loadPriorFiles();
             long changesBefore = incremental ? parseLong(db.getMeta("changes_since_full")) : 0;
-
             if (incremental) {
                 db.putMeta("notes", IN_PROGRESS);
             } else {
-                db.wipeAllData();
-                db.inTransaction(() -> {
-                    db.putMeta("schema_version", String.valueOf(Schema.VERSION));
-                    db.putMeta("notes", IN_PROGRESS);
-                });
+                db.wipeProject();
+                db.inTransaction(() -> db.putMeta("notes", IN_PROGRESS));
             }
+            long dataChangesStart = db.totalChanges();
 
             FileIndexPipeline.Result result;
             int removed = 0;
@@ -123,6 +139,7 @@ public final class IndexerApp {
                 writer.finishGradle(rootName);
             }
             long afterWrite = System.nanoTime();
+            boolean dirty = !incremental || db.totalChanges() > dataChangesStart;
 
             if (!incremental) {
                 db.rebuildFts();
@@ -132,12 +149,15 @@ public final class IndexerApp {
             long changes = result.written() + removed;
             long changesSinceFull = incremental ? changesBefore + changes : 0;
             writeFinalMeta(db, options, gitInfo, runTimestamp, rootName, incremental, changesSinceFull);
+            if (dirty) {
+                db.bumpSeq();
+            }
             boolean touchedMany = !prior.isEmpty() && (double) changes / prior.size() > VACUUM_THRESHOLD;
             db.setVacuumOnClose(!incremental || touchedMany);
 
             log.info("mode=" + (incremental ? "incremental" : "full") + ", written=" + result.written()
                     + ", unchanged=" + result.unchanged() + ", removed=" + removed + ", failed=" + result.failed()
-                    + ", workers=" + workers);
+                    + ", workers=" + workers + ", seq=" + db.getGlobalMeta("seq"));
             if (options.stats()) {
                 printStats(db, log);
                 log.info("timings: select=" + ms(start, afterSelect) + " ms, index+write="
@@ -147,7 +167,13 @@ public final class IndexerApp {
         } catch (SQLException e) {
             throw new IOException("database error: " + e.getMessage(), e);
         }
-
+        if (baseSnapshot != null) {
+            try {
+                writePatch(baseSnapshot, options, log);
+            } finally {
+                Files.deleteIfExists(baseSnapshot);
+            }
+        }
         if (options.stats()) {
             log.info("db size: " + (Files.size(options.out()) / 1024) + " KB, total time: "
                     + ms(start, System.nanoTime()) + " ms");
@@ -180,11 +206,14 @@ public final class IndexerApp {
     /** Replaces the file-less errors (skipped files) only when they differ, so a no-op run keeps all ids. */
     private static void syncSkipped(Db db, IndexWriter writer, List<SkippedFile> skipped) throws SQLException {
         List<String> existing = new ArrayList<>();
-        try (Statement st = db.connection().createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT path, stage, message FROM index_errors WHERE file_id IS NULL ORDER BY id")) {
-            while (rs.next()) {
-                existing.add(rs.getString(1) + "\t" + rs.getString(2) + "\t" + rs.getString(3));
+        try (PreparedStatement ps = db.connection().prepareStatement(
+                "SELECT path, stage, message FROM index_errors WHERE project_id = ? AND file_id IS NULL "
+                        + "ORDER BY id")) {
+            ps.setString(1, db.project());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    existing.add(rs.getString(1) + "\t" + rs.getString(2) + "\t" + rs.getString(3));
+                }
             }
         }
         List<String> desired = skipped.stream()
@@ -192,7 +221,8 @@ public final class IndexerApp {
         if (existing.equals(desired)) {
             return;
         }
-        db.inTransaction(() -> db.execute("DELETE FROM index_errors WHERE file_id IS NULL"));
+        db.inTransaction(() -> db.update(
+                "DELETE FROM index_errors WHERE project_id = ? AND file_id IS NULL", db.project()));
         writer.recordSkipped(skipped);
     }
 
@@ -211,8 +241,8 @@ public final class IndexerApp {
     private static void writeFinalMeta(Db db, IndexerOptions options, GitInfo git, String runTimestamp,
                                        String rootName, boolean incremental, long changesSinceFull)
             throws SQLException {
+        String project = db.project();
         Map<String, String> meta = new LinkedHashMap<>();
-        meta.put("schema_version", String.valueOf(Schema.VERSION));
         meta.put("indexer_version", Versions.indexer());
         meta.put("indexed_at", runTimestamp);
         meta.put("root_name", rootName);
@@ -223,10 +253,14 @@ public final class IndexerApp {
         meta.put("git_dirty", git.dirty() ? "1" : "0");
         meta.put("source_included", options.noSource() ? "0" : "1");
         meta.put("symbol_resolution", options.noResolve() ? "0" : "1");
-        meta.put("file_count", String.valueOf(db.queryLong("SELECT COUNT(*) FROM files")));
-        meta.put("type_count", String.valueOf(db.queryLong("SELECT COUNT(*) FROM types")));
-        meta.put("member_count", String.valueOf(db.queryLong("SELECT COUNT(*) FROM members")));
-        meta.put("error_count", String.valueOf(db.queryLong("SELECT COUNT(*) FROM index_errors")));
+        meta.put("file_count", String.valueOf(
+                db.queryLong("SELECT COUNT(*) FROM files WHERE project_id = ?", project)));
+        meta.put("type_count", String.valueOf(db.queryLong(
+                "SELECT COUNT(*) FROM types t JOIN files f ON f.id = t.file_id WHERE f.project_id = ?", project)));
+        meta.put("member_count", String.valueOf(db.queryLong(
+                "SELECT COUNT(*) FROM members m JOIN files f ON f.id = m.file_id WHERE f.project_id = ?", project)));
+        meta.put("error_count", String.valueOf(
+                db.queryLong("SELECT COUNT(*) FROM index_errors WHERE project_id = ?", project)));
         meta.put("changes_since_full", String.valueOf(changesSinceFull));
         meta.put("notes", incremental ? incrementalNote(changesSinceFull) : "");
         db.inTransaction(() -> {
@@ -247,7 +281,7 @@ public final class IndexerApp {
     }
 
     private static void printStats(Db db, Log log) throws SQLException {
-        log.info("--- stats ---");
+        log.info("--- stats (all projects in the database) ---");
         for (String table : STAT_TABLES) {
             log.info(table + ": " + db.queryLong("SELECT COUNT(*) FROM " + table));
         }
@@ -262,6 +296,25 @@ public final class IndexerApp {
                 sb.append(rs.getString(1)).append('=').append(rs.getLong(2));
             }
             log.info("errors by stage: " + (sb.length() == 0 ? "none" : sb));
+        }
+    }
+
+    private static void writePatch(Path base, IndexerOptions options, Log log) throws IOException {
+        try {
+            Optional<PatchWriter.Result> result = PatchWriter.write(base, options.out(), options.patchDir());
+            if (result.isEmpty()) {
+                log.info("patch: no data changes, no patch written");
+                return;
+            }
+
+            PatchWriter.Result r = result.get();
+            log.info("patch: " + r.file() + " (seq " + r.fromSeq() + " -> " + r.toSeq() + ", -" + r.deletes()
+                    + " +" + r.inserts() + " ~" + r.updates() + " rows, " + r.bytes() / 1024 + " KB)");
+            if (r.bytes() > Files.size(options.out()) / 4) {
+                log.warn("the patch is large compared with the database; uploading the full database may be simpler");
+            }
+        } catch (SQLException e) {
+            throw new IOException("patch error: " + e.getMessage(), e);
         }
     }
 }
