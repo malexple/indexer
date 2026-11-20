@@ -1,0 +1,31 @@
+services:
+  mcp-sql:
+    build: .
+    restart: unless-stopped
+    environment:
+      MCPSQL_READ_KEY: ${MCPSQL_READ_KEY}
+      MCPSQL_WRITE_KEY: ${MCPSQL_WRITE_KEY}
+    volumes:
+      - mcpsql-data:/data
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      MCPSQL_DOMAIN: ${MCPSQL_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - mcp-sql
+
+volumes:
+  mcpsql-data:
+  caddy-data:
+  caddy-config:

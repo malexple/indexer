@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: mcp-sql-service
+  ai:
+    mcp:
+      server:
+        name: mcp-sql-service
+        version: 0.1.0
+        type: SYNC
+        protocol: STATELESS
+        instructions: >
+          Code index of Java projects. Start with index_info, find a type with find_type,
+          get an overview with context, then read_source. Use sql only for questions the other tools cannot answer.
+
+server:
+  port: 8080
+
+mcpsql:
+  data-dir: ${MCPSQL_DATA_DIR:./data}
+  read-key: ${MCPSQL_READ_KEY:}
+  write-key: ${MCPSQL_WRITE_KEY:}
+  max-response-chars: 8000
+  sql-timeout-seconds: 3
+  sql-max-rows: 200
+  max-upload-mb: 200

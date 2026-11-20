@@ -23,7 +23,7 @@ import java.util.concurrent.Callable;
         mixinStandardHelpOptions = true,
         versionProvider = VersionProvider.class,
         sortOptions = false,
-        subcommands = {ApplyCommand.class, DiffCommand.class},
+        subcommands = {ApplyCommand.class, DiffCommand.class, PushCommand.class},
         description = "Indexes a project directory into a single SQLite file for AI assistants.")
 public final class IndexerCommand implements Callable<Integer> {
 
