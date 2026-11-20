@@ -1,6 +1,5 @@
 package ru.mcs.indexer.util;
 
-import ru.mcs.indexer.IndexerMain;
 
 public final class Versions {
 
@@ -8,7 +7,7 @@ public final class Versions {
     }
 
     public static String indexer() {
-        Package pkg = IndexerMain.class.getPackage();
+        Package pkg = Versions.class.getPackage();
         String version = pkg == null ? null : pkg.getImplementationVersion();
         return version == null ? "dev" : version;
     }

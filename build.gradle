@@ -1,69 +1,24 @@
-plugins {
-    id 'java'
-    id 'application'
-    id 'com.gradleup.shadow' version '9.6.1'
-}
+subprojects {
+    apply plugin: 'java'
 
-group = 'ru.mcs.indexer'
-version = '1.2.0'
+    group = 'ru.mcs.indexer'
+    version = '1.1.0'
 
-repositories {
-    mavenCentral()
-}
-
-dependencies {
-    implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.28.2'
-    implementation 'org.xerial:sqlite-jdbc:3.53.2.0'
-    implementation 'info.picocli:picocli:4.7.7'
-    implementation 'org.yaml:snakeyaml:2.6'
-
-    testImplementation platform('org.junit:junit-bom:5.14.4')
-    testImplementation 'org.junit.jupiter:junit-jupiter'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    testImplementation 'org.assertj:assertj-core:3.27.7'
-}
-
-application {
-    mainClass = 'ru.mcs.indexer.IndexerMain'
-}
-
-tasks.withType(JavaCompile).configureEach {
-    options.release = 21
-    options.encoding = 'UTF-8'
-}
-
-// QUERIES.md lives in the repository root and is shipped inside the jar (copied next to index.db at run time).
-tasks.named('processResources') {
-    from(layout.projectDirectory.file('QUERIES.md'))
-    from(layout.projectDirectory.file('apply_patch.py'))
-}
-
-tasks.named('test') {
-    useJUnitPlatform()
-    testLogging {
-        events 'failed', 'skipped'
-        exceptionFormat = 'full'
-        showStandardStreams = false
+    repositories {
+        mavenCentral()
     }
-}
 
-tasks.named('shadowJar') {
-    archiveFileName = 'Indexer.jar'
-    mergeServiceFiles()
-    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
-    manifest {
-        attributes(
-                'Main-Class': 'ru.mcs.indexer.IndexerMain',
-                'Implementation-Title': 'Indexer',
-                'Implementation-Version': project.version.toString(),
-                'Multi-Release': 'true'
-        )
+    tasks.withType(JavaCompile).configureEach {
+        options.release = 21
+        options.encoding = 'UTF-8'
     }
-    from(layout.projectDirectory.files('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
-        into 'META-INF'
-    }
-}
 
-tasks.named('build') {
-    dependsOn 'shadowJar'
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+        testLogging {
+            events 'failed', 'skipped'
+            exceptionFormat = 'full'
+            showStandardStreams = false
+        }
+    }
 }

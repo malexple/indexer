@@ -1,2 +1,3 @@
 rootProject.name = 'indexer'
 
+include 'indexer-core', 'indexer-cli'

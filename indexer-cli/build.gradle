@@ -1,0 +1,39 @@
+plugins {
+    id 'application'
+    id 'com.gradleup.shadow' version '9.6.1'
+}
+
+dependencies {
+    implementation project(':indexer-core')
+    implementation 'info.picocli:picocli:4.7.7'
+
+    testImplementation platform('org.junit:junit-bom:5.14.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.assertj:assertj-core:3.27.7'
+}
+
+application {
+    mainClass = 'ru.mcs.indexer.IndexerMain'
+}
+
+tasks.named('shadowJar') {
+    archiveFileName = 'Indexer.jar'
+    mergeServiceFiles()
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    manifest {
+        attributes(
+                'Main-Class': 'ru.mcs.indexer.IndexerMain',
+                'Implementation-Title': 'Indexer',
+                'Implementation-Version': project.version.toString(),
+                'Multi-Release': 'true'
+        )
+    }
+    from(rootProject.layout.projectDirectory.files('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+        into 'META-INF'
+    }
+}
+
+tasks.named('build') {
+    dependsOn 'shadowJar'
+}

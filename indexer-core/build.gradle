@@ -1,0 +1,22 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.28.2'
+    implementation 'org.xerial:sqlite-jdbc:3.53.2.0'
+    implementation 'org.yaml:snakeyaml:2.6'
+
+    testImplementation platform('org.junit:junit-bom:5.14.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.assertj:assertj-core:3.27.7'
+}
+
+tasks.named('jar') {
+    manifest {
+        attributes(
+                'Implementation-Title': 'Indexer core',
+                'Implementation-Version': project.version.toString())
+    }
+}
