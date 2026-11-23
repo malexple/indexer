@@ -1,8 +1,3 @@
 {$MCPSQL_DOMAIN} {
-    request_body {
-        max_size 250MB
-    }
-    reverse_proxy mcp-sql:8080 {
-        flush_interval -1
-    }
+    reverse_proxy mcp-sql:8080
 }

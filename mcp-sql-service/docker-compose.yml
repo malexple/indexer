@@ -1,12 +1,10 @@
 services:
   mcp-sql:
-    build: .
+    image: malexple/mcp-sql:${MCPSQL_TAG:-0.1.0}
     restart: unless-stopped
-    environment:
-      MCPSQL_READ_KEY: ${MCPSQL_READ_KEY}
-      MCPSQL_WRITE_KEY: ${MCPSQL_WRITE_KEY}
+    env_file: .env
     volumes:
-      - mcpsql-data:/data
+      - mcp-data:/data
     expose:
       - "8080"
 
@@ -17,7 +15,7 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      MCPSQL_DOMAIN: ${MCPSQL_DOMAIN}
+      - MCPSQL_DOMAIN=${MCPSQL_DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -26,6 +24,6 @@ services:
       - mcp-sql
 
 volumes:
-  mcpsql-data:
+  mcp-data:
   caddy-data:
   caddy-config:
