@@ -1,201 +1,175 @@
 # Indexer
 
-Консольная утилита: обходит каталог проекта, разбирает исходники в AST и пишет структурированный индекс в один файл SQLite (`index.db`). Файл прикладывают к чату с ИИ-ассистентом: ассистент выполняет SQL (Python `sqlite3`, без интернета), находит классы, методы, вызовы, зависимости и читает исходный текст по диапазону строк.
+[Русский](README_ru.md) | English
 
-Что в индексе: файлы с текстом, типы и члены Java (с сигнатурами и номерами строк), вызовы и зависимости между типами, импорты и аннотации, `module-info.java`, модули и зависимости Gradle, плоские ключи из yml/yaml/json/properties/toml, полнотекстовый поиск (FTS5), метаданные git.
+Indexer is a console tool that walks a project directory, parses the sources into an AST and writes a structured index into a single SQLite file (`index.db`). An AI assistant can then query the index instead of reading the whole repository. There are two ways to use it:
 
-Утилита только читает проект. Она не выполняет код проекта, не запускает сборку, не ходит в сеть;
-внешний процесс только один: `git` (если он установлен).
+- **Attach the file to a chat.** The assistant runs SQL on `index.db` (Python `sqlite3`, no internet), finds classes, methods, calls and dependencies, and reads source text by line range.
+- **Publish it to an MCP server.** `mcp-sql-service` keeps the database on a server and exposes it over MCP (Streamable HTTP) to Perplexity or any other MCP client. After code changes you upload only a small patch.
 
-## Требования
+What the index contains: files with text, Java types and members (signatures and line numbers), calls and type dependencies, imports and annotations, `module-info.java`, Gradle modules and dependencies, flat keys from yml/yaml/json/properties/toml, full-text search (FTS5) and git metadata.
 
-| Что                 | Версия                                                       |
-| ------------------- | ------------------------------------------------------------ |
-| JDK                 | 21 или новее                                                 |
-| Gradle (для сборки) | 9.2 или новее (требование плагина Shadow 9.6.1)              |
-| git                 | необязателен; с ним список файлов точно совпадает с `.gitignore` |
+The tool only reads the project. It does not run project code, does not start builds and does not use the network (except the explicit `push` command). The only external process is `git`, if it is installed.
 
-Платформы: сборка и работа проверены на Windows. На Linux и macOS нативных зависимостей, кроме `sqlite-jdbc` со встроенными библиотеками, нет, но сборка там пока не проверялась.
+## Requirements
 
-## Сборка
+| What | Version |
+| --- | --- |
+| JDK | 21 or newer |
+| Gradle (to build) | 9.2 or newer (required by the Shadow plugin 9.6.1) |
+| git | optional; with it the file list matches `.gitignore` exactly |
 
-Wrapper-jar в репозиторий не входит. Один раз создайте его установленным Gradle:
+Platforms: build and run are verified on Windows. On Linux and macOS there are no native dependencies except `sqlite-jdbc` with bundled libraries, but the build has not been verified there yet.
+
+## Build
+
+The Gradle wrapper jar is not in the repository. Create it once with an installed Gradle, then:
 
 ```bash
 gradlew clean test shadowJar        (Windows)
 ./gradlew clean test shadowJar      (Linux, macOS)
 ```
 
-Результат: `build/libs/Indexer.jar`, один fat-jar (`Main-Class: ru.mcs.indexer.IndexerMain`).
-Скопируйте его туда, откуда удобно запускать, например `D:\tools\Indexer.jar`.
+Result: `indexer-cli/build/libs/Indexer.jar`, a single fat jar (`Main-Class: ru.mcs.indexer.IndexerMain`). Copy it somewhere convenient, for example `D:\tools\Indexer.jar`.
 
-## Быстрый старт
+## Quick start
 
-Из корня индексируемого проекта:
+From the root of the project you want to index:
 
-````bash
+```bash
 java -jar D:\tools\Indexer.jar -l=java --stats
-````
+```
 
-Появится `.index/index.db` и рядом `.index/QUERIES.md` с готовыми запросами. Добавьте `.index/` в `.gitignore` проекта (утилита сама никогда не индексирует каталог `.index/`).
+This creates `.index/index.db` and next to it `.index/QUERIES.md` with ready-made queries. Add `.index/` to the project's `.gitignore` (the tool never indexes the `.index/` directory itself).
 
-Проверить результат:
+Check the result:
 
-````bash
+```bash
 python -c "import sqlite3; c=sqlite3.connect('.index/index.db'); print(c.execute('select key,value from meta').fetchall())"
-````
+```
 
-## Командная строка
+## Command line
 
-Поддерживаются оба стиля: `-l=java` и `-l java`.
+Both styles are supported: `-l=java` and `-l java`.
 
-| Опция                             | По умолчанию             | Смысл                                                        |
-| --------------------------------- | ------------------------ | ------------------------------------------------------------ |
-| `-r`, `--root`                    | текущий каталог          | корень проекта                                               |
-| `-o`, `--out`                     | `<root>/.index/index.db` | путь к базе                                                  |
-| `-l`, `--lang`                    | `java`                   | языки с разбором AST через запятую: `java` (реализован), `javascript`, `zig`, `kotlin` (пока нет, будут проигнорированы с предупреждением) |
-| `--include-ext`                   | пусто                    | дополнительные расширения, хранятся как текст и участвуют в FTS (точка не нужна) |
-| `--exclude`                       | пусто                    | дополнительные gitignore-подобные исключения через запятую   |
-| `--max-file-kb`                   | `500`                    | файлы больше пропускаются (запись `SKIP_SIZE` в `index_errors`) |
-| `--incremental`                   | выкл.                    | пересчитывать только изменённые файлы (по SHA-256)           |
-| `--no-source`                     | выкл.                    | не хранить текст файлов (`files.content = NULL`, FTS по тексту пустой), база заметно меньше |
-| `--no-resolve`                    | выкл.                    | не использовать SymbolSolver, быстрее, все вызовы с `resolved=0` |
-| `--stats`                         | выкл.                    | после индексации вывести счётчики таблиц, ошибки по стадиям, время, размер |
-| `-v`, `--verbose`                 | выкл.                    | подробный лог                                                |
-| `-h`, `--help`, `-V`, `--version` |                          | справка и версия                                             |
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `-r`, `--root` | current directory | project root |
+| `-o`, `--out` | `<root>/.index/index.db` | database path |
+| `-l`, `--lang` | `java` | comma-separated languages with AST parsing: `java` (implemented); `javascript`, `zig`, `kotlin` are not implemented yet and are ignored with a warning |
+| `--include-ext` | empty | extra extensions stored as text and included in FTS (no leading dot) |
+| `--exclude` | empty | extra gitignore-like exclusions, comma-separated |
+| `--max-file-kb` | `500` | larger files are skipped (`SKIP_SIZE` record in `index_errors`) |
+| `--incremental` | off | recompute only changed files (by SHA-256) |
+| `--patch-dir` | none | with `--incremental`: also write a patch `patch-<from>-<to>.sql.gz` for the server into this directory |
+| `--no-source` | off | do not store file text (`files.content = NULL`, text FTS is empty), the database is much smaller |
+| `--no-resolve` | off | do not use SymbolSolver, faster, all calls get `resolved=0` |
+| `--stats` | off | print table counters, errors by stage, time and size after indexing |
+| `-v`, `--verbose` | off | verbose log |
+| `-h`, `--help`, `-V`, `--version` | | help and version |
 
-Коды выхода: `0` успех (в том числе при нефатальных ошибках разбора, они записываются в `index_errors`), `1` ошибка аргументов, `2` фатальная ошибка БД или ввода-вывода.
+Subcommands: `push` (upload to the MCP server, see below), `diff` and `apply` (create and apply patches between two databases by hand).
 
-### Системные свойства (диагностика)
+Exit codes: `0` success (including non-fatal parse errors, they go to `index_errors`), `1` argument error, `2` fatal database or I/O error.
 
-| Свойство                         | Смысл                                                        |
-| -------------------------------- | ------------------------------------------------------------ |
-| `-Dindexer.threads=N`            | число рабочих потоков (по умолчанию 2 при резолве, до 8 с `--no-resolve`) |
-| `-Dindexer.resolve.budget.ms=N`  | бюджет CPU на резолв одного файла, по умолчанию 3000, `0` = без лимита |
-| `-Dindexer.resolve.filter=false` | отключить фильтр релевантности (резолвить все вызовы, медленнее) |
-| `-Dindexer.profile=true`         | с `-v` печатает профиль потоков                              |
+### System properties (diagnostics)
 
-В PowerShell аргументы с точкой берите в кавычки: `java "-Dindexer.threads=1" -jar Indexer.jar ...`.
+| Property | Meaning |
+| --- | --- |
+| `-Dindexer.threads=N` | number of worker threads (default 2 with resolve, up to 8 with `--no-resolve`) |
+| `-Dindexer.resolve.budget.ms=N` | CPU budget for resolving one file, default 3000, `0` = no limit |
+| `-Dindexer.resolve.filter=false` | disable the relevance filter (resolve all calls, slower) |
+| `-Dindexer.profile=true` | with `-v` prints a thread profile |
 
-## Примеры команд
+In PowerShell put arguments with a dot in quotes: `java "-Dindexer.threads=1" -jar Indexer.jar ...`.
 
-````bash
-:: индексировать текущий проект, показать сводку
+## Examples
+
+```bash
+:: index the current project, show the summary
 java -jar Indexer.jar -l=java --stats
 
-:: другой каталог, база в другом месте
+:: another directory, database in another place
 java -jar Indexer.jar -r D:\work\myproj -o D:\work\myproj.index.db -l java
 
-:: лёгкая версия без текста файлов (для больших проектов или публикации структуры)
+:: light version without file text (large projects, or publishing structure only)
 java -jar Indexer.jar -l=java --no-source -o build\light.db --stats
 
-:: быстро и без резолва типов и вызовов (около 9 с вместо 20+ с на проекте из 500 файлов)
+:: fast, without resolving types and calls (about 9 s instead of 20+ s on a 500-file project)
 java -jar Indexer.jar -l=java --no-resolve --stats
 
-:: после правок: пересчитать только изменённое
+:: after edits: recompute only what changed
 java -jar Indexer.jar -l=java --incremental --stats
 
-:: дополнительные расширения как текст, исключить сгенерированный код и тесты
+:: extra extensions as text, exclude generated code and tests
 java -jar Indexer.jar -l=java --include-ext=cfg,ini --exclude="/generated/,/src/test/"
+```
 
-:: подробный лог и профиль времени
-java "-Dindexer.profile=true" -jar Indexer.jar -l=java -v --stats
+## What goes into the index
 
-:: только YAML/Gradle/конфиги и структура (AST не нужен, но язык обязателен: задайте java)
-java -jar Indexer.jar -l=java --no-resolve --max-file-kb 200
-````
+Files are selected like this:
 
-## Что попадает в индекс
+1. If the root has a git repository and `git` is available: `git ls-files -z --cached --others --exclude-standard`.
+2. Otherwise the tool parses `.gitignore` itself (root and nested, `.git/info/exclude`): comments, `!` negation, `/` anchor, directories, `*`, `**`, `?`, `[abc]` classes.
 
-Файлы выбираются так:
+Always excluded: `.git/`, `.gradle/`, `.idea/`, `.vscode/`, `node_modules/`, `.index/` at any depth, `build/`, `out/`, `target/` outside `src/` subtrees (so a package with such a name is not lost), `*.min.js`, `*.min.css`, binary files (NUL in the first 8 KB, `SKIP_BINARY`) and files larger than `--max-file-kb`.
 
-1. Если в корне есть git-репозиторий и `git` доступен: `git ls-files -z --cached --others --exclude-standard`.
-2. Иначе утилита сама разбирает `.gitignore` (корневой и вложенные, `.git/info/exclude`): комментарии,
-   `!` отрицание, `/` якорь, каталоги, `*`, `**`, `?`, классы `[abc]`.
+Default extensions (stored in `files` and included in FTS): `java`, `gradle`, `kts`, `properties`, `yml`, `yaml`, `json`, `toml`, `css`, `md`, `sql`, `xml`, `txt`. AST is built only for languages from `--lang`. Structural parsing of Gradle and configs is always on.
 
-Всегда исключаются: `.git/`, `.gradle/`, `.idea/`, `.vscode/`, `node_modules/`, `.index/` на любой глубине,
-`build/`, `out/`, `target/` вне поддеревьев `src/` (чтобы не потерять пакет с таким именем), `*.min.js`, `*.min.css`,
-бинарные файлы (NUL в первых 8 КБ, запись `SKIP_BINARY`) и файлы больше `--max-file-kb`.
+Text is read as UTF-8; a non-UTF-8 file is read as windows-1251 and a `READ` warning is written to `index_errors`. Line endings are normalised to `\n`, BOM is removed. All line numbers in the tables refer to the normalised text in `files.content`.
 
-Расширения по умолчанию (хранятся в `files` и участвуют в FTS): `java`, `gradle`, `kts`, `properties`, `yml`,
-`yaml`, `json`, `toml`, `css`, `md`, `sql`, `xml`, `txt`. AST строится только для языков из `--lang`.
-Структурный разбор Gradle и конфигов включён всегда.
+Stages in `index_errors`: `READ`, `PARSE` (syntax and configs), `RESOLVE` (file resolve budget exhausted), `SKIP_SIZE`, `SKIP_BINARY`, `DB`. An error in one file does not stop indexing.
 
-Текст читается как UTF-8; если файл не в UTF-8, он читается как windows-1251 и в `index_errors` пишется
-предупреждение `READ`. Перевод строк нормализуется к `\n`, BOM удаляется. Все номера строк в таблицах относятся
-к нормализованному тексту в `files.content`.
+## Full and incremental modes
 
-Стадии в `index_errors`: `READ`, `PARSE` (синтаксис и конфиги), `RESOLVE` (исчерпан бюджет резолва файла),
-`SKIP_SIZE`, `SKIP_BINARY`, `DB`. Ошибка в одном файле не останавливает индексацию.
+A full run (default) recreates the data and rebuilds FTS. `files.indexed_at` of files with an unchanged hash is preserved, so two runs in a row give identical tables (except `meta.indexed_at`).
 
-## Режимы: полный и инкрементальный
+`--incremental` reads and hashes all files, parses only new and changed ones, deletes vanished ones, and maintains FTS by hand in the same transaction. A no-op run on 502 files takes about 1.2 s and changes nothing. Gradle modules are recomputed every time from all scripts.
 
-Полный проход (по умолчанию) пересоздаёт данные и перестраивает FTS; значения `files.indexed_at` у файлов
-с прежним хэшем сохраняются, поэтому два запуска подряд дают одинаковые таблицы (кроме `meta.indexed_at`).
+The incremental mode falls back to a full run (with a warning) if there is no previous index, the previous run did not finish, or the indexer version, `--lang`, `--no-source` or `--no-resolve` changed.
 
-`--incremental`: читает и хэширует все файлы, парсит только новые и изменённые, удаляет исчезнувшие, ведёт FTS
-вручную в одной транзакции с правкой `files`. Холостой запуск на 502 файлах занимает около 1.2 с и ничего не
-меняет в базе. Модули Gradle пересчитываются каждый раз по всем скриптам.
+Limitation: files that depend on changed files are not recomputed, so `calls.callee_owner_fqn`, `resolved` and `type_deps` of those files may become stale. This is written to `meta.notes`; a full run is recommended after every 100 changed files (counter `meta.changes_since_full`).
 
-Инкрементальный режим сам откатывается на полный проход (с предупреждением), если нет прошлого индекса,
-прошлый запуск не завершился, либо изменились версия индексатора, `--lang`, `--no-source` или `--no-resolve`.
+The database is always a single file without `-wal` and `-shm`. `VACUUM` runs after a full run and after an incremental run that touched more than 20% of the files.
 
-Ограничение: файлы, зависящие от изменённых, не пересчитываются, поэтому `calls.callee_owner_fqn`, `resolved`
-и `type_deps` у них могут устареть. Об этом написано в `meta.notes`; полный запуск рекомендуется после каждых
-100 изменённых файлов (счётчик `meta.changes_since_full`).
+## Symbol resolution and speed
 
-База после завершения всегда один файл без `-wal` и `-shm`. `VACUUM` выполняется после полного прохода
-и после инкрементального, если затронуто более 20% файлов.
+`SymbolSolver` uses the JDK and the project directories `src/main/java` and `src/test/java`. External JARs are not attached, so calls into libraries (JavaFX, JUnit and so on) keep `resolved=0`; `callee_name` and the call line are still stored. `resolved=1` means the solver confirmed the owner.
 
-## Разрешение символов и скорость
+A relevance filter is on for speed: a call is resolved only if a method with that name is declared in the project. So JDK calls usually have `resolved=0` too; calls into project code are resolved fully.
 
-`SymbolSolver` использует JDK и каталоги `src/main/java`, `src/test/java` проекта. Внешние JAR не подключаются,
-поэтому вызовы библиотек (JavaFX, JUnit и т. п.) остаются с `resolved=0`; `callee_name` и строка вызова при
-этом сохраняются. `resolved=1` означает, что владельца подтвердил solver.
+Measured on a JavaFX project of 502 files (539 types, 23 thousand calls): full run 17–27 s, `--no-resolve` about 9–13 s, database 10.3 MB, 5.7 MB with `--no-source`.
 
-Для скорости включён фильтр релевантности: вызов резолвится, только если метод с таким именем объявлен
-в проекте. Поэтому вызовы методов JDK тоже обычно с `resolved=0`; вызовы кода проекта резолвятся полностью.
+## Schema overview
 
-Измерено на JavaFX-проекте из 502 файлов (539 типов, 23 тыс. вызовов): полный проход 17–27 с, `--no-resolve`
-около 9–13 с, база 10.3 МБ, с `--no-source` 5.7 МБ.
+| Table | Content |
+| --- | --- |
+| `meta` | commit, branch, `git_dirty`, counters, `notes`, `indexed_at` |
+| `files` | path, module, language, kind (`SOURCE_MAIN`, `SOURCE_TEST`, `RESOURCE`, `BUILD`, `DOC`, `OTHER`), text, SHA-256 |
+| `types`, `type_relations` | classes, interfaces, enums, records, annotations; `extends`, `implements`, `permits` |
+| `members` | methods, constructors, fields, enum constants, record components, initialisers |
+| `calls`, `type_deps` | calls and object creation; "type depends on type" graph |
+| `annotations`, `imports` | annotations with arguments; imports |
+| `java_modules`, `module_directives` | `module-info.java` |
+| `gradle_modules`, `gradle_deps` | Gradle modules and dependencies (`PROJECT` / `EXTERNAL`) |
+| `config_entries` | flat keys such as `contributions.actions[0].id` |
+| `code_fts` | FTS5 over `files` (path and text) |
+| `index_errors` | everything that could not be processed |
 
-## Схема кратко
+The full description of relations and ready-made queries is in `QUERIES.md`.
 
-| Таблица                             | Содержимое                                                   |
-| ----------------------------------- | ------------------------------------------------------------ |
-| `meta`                              | commit, ветка, `git_dirty`, счётчики, `notes`, `indexed_at`  |
-| `files`                             | путь, модуль, язык, вид (`SOURCE_MAIN`, `SOURCE_TEST`, `RESOURCE`, `BUILD`, `DOC`, `OTHER`), текст, SHA-256 |
-| `types`, `type_relations`           | классы, интерфейсы, enum, record, аннотации; `extends`, `implements`, `permits` |
-| `members`                           | методы, конструкторы, поля, константы enum, компоненты record, инициализаторы |
-| `calls`, `type_deps`                | вызовы и создание объектов; граф «тип зависит от типа»       |
-| `annotations`, `imports`            | аннотации с аргументами; импорты                             |
-| `java_modules`, `module_directives` | `module-info.java`                                           |
-| `gradle_modules`, `gradle_deps`     | модули и зависимости Gradle (`PROJECT` / `EXTERNAL`)         |
-| `config_entries`                    | плоские ключи вроде `contributions.actions[0].id`            |
-| `code_fts`                          | FTS5 по `files` (путь и текст)                               |
-| `index_errors`                      | всё, что не удалось обработать                               |
+## Query examples
 
-Полное описание связей и готовые запросы лежат в `QUERIES.md` 
-
-## Примеры запросов
-
-Подставляйте свои имена. Python (без сети):
+Substitute your own names. Python (offline):
 
 ```python
 import sqlite3
 con = sqlite3.connect(".index/index.db")
 ```
 
-Порядок работы для ассистента: сначала `meta`, затем поиск типа, затем члены и вызовы, затем текст по диапазону
-строк.
+Recommended order for an assistant: `meta` first, then type lookup, then members and calls, then text by line range.
 
-Метаданные и актуальность:
-
-```sql
-SELECT key, value FROM meta ORDER BY key;
-```
-
-Найти тип и его члены:
+Find a type and its members:
 
 ```sql
 SELECT t.fqn, t.kind, f.path, t.line_from, t.line_to
@@ -208,16 +182,7 @@ WHERE t.fqn = 'ru.mcs.indexer.db.IndexWriter'
 ORDER BY m.line_from;
 ```
 
-Кто реализует интерфейс:
-
-```sql
-SELECT t.fqn, f.path
-FROM type_relations r JOIN types t ON t.id = r.type_id JOIN files f ON f.id = t.file_id
-WHERE r.relation = 'IMPLEMENTS'
-  AND (r.target_fqn = 'ru.mcs.indexer.lang.LanguageIndexer' OR r.target_name = 'LanguageIndexer');
-```
-
-Кто вызывает метод (с файлом, строкой и вызывающим членом):
+Who calls a method (with file, line and calling member):
 
 ```sql
 SELECT f.path, c.line, c.resolved, ct.fqn AS caller_type, cm.signature AS caller_member
@@ -229,47 +194,14 @@ WHERE c.callee_name = 'writeFile'
 ORDER BY f.path, c.line;
 ```
 
-От чего зависит тип и кто зависит от него:
-
-```sql
-SELECT d.dep_kind, d.to_fqn FROM type_deps d JOIN types t ON t.id = d.from_type_id
-WHERE t.fqn = 'ru.mcs.indexer.db.IndexWriter' ORDER BY d.dep_kind, d.to_fqn;
-
-SELECT t.fqn, d.dep_kind FROM type_deps d JOIN types t ON t.id = d.from_type_id
-WHERE d.to_fqn = 'ru.mcs.indexer.db.Db';
-```
-
-Граф модулей Gradle и `provides` из `module-info`:
+Gradle module graph:
 
 ```sql
 SELECT m.name, d.target FROM gradle_deps d JOIN gradle_modules m ON m.id = d.module_id
 WHERE d.dep_kind = 'PROJECT' ORDER BY m.name, d.target;
-
-SELECT m.name, d.target, d.extra FROM module_directives d JOIN java_modules m ON m.id = d.java_module_id
-WHERE d.directive = 'provides';
 ```
 
-Вклады плагина и сообщения:
-
-```sql
-SELECT f.path, c.key_path, c.value, c.line
-FROM config_entries c JOIN files f ON f.id = c.file_id
-WHERE f.path LIKE '%plugin.yml' AND c.key_path LIKE 'contributions.%';
-```
-
-Исходный текст метода по диапазону строк (в БД текст методов не дублируется):
-
-```python
-path, content, a, b = con.execute(
-    "SELECT f.path, f.content, m.line_from, m.line_to FROM members m "
-    "JOIN types t ON t.id = m.type_id JOIN files f ON f.id = m.file_id "
-    "WHERE t.fqn = ? AND m.signature LIKE ? ORDER BY m.line_from LIMIT 1",
-    ("ru.mcs.indexer.db.IndexWriter", "writeFile(%")).fetchone()
-print("\n".join(content.split("\n")[a - 1:b]))
-```
-
-Полнотекстовый поиск. Пользовательский текст всегда оборачивайте в двойные кавычки (иначе точки, дефисы
-и двоеточия FTS5 считает операторами), внутренние кавычки удваивайте:
+Full-text search. Always wrap user text in double quotes (otherwise FTS5 treats dots, hyphens and colons as operators) and double any inner quotes:
 
 ```python
 def fts_quote(text):
@@ -281,68 +213,178 @@ rows = con.execute(
     (fts_quote("ru.mcs.Main"),)).fetchall()
 ```
 
-Проверка, что база не устарела:
+Check that the database is not stale:
 
 ```python
 import subprocess
 indexed = dict(con.execute("SELECT key, value FROM meta")).get("git_commit", "unknown")
 head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 if indexed != head:
-    print(f"WARNING: индекс построен на {indexed[:8]}, репозиторий на {head[:8]}")
+    print(f"WARNING: index built at {indexed[:8]}, repository at {head[:8]}")
 ```
 
-Прогнать все примеры из `QUERIES.md` и посмотреть число строк в каждом:
+## Use with an AI assistant
 
-````bash
-python run_queries.py .index\index.db
-````
+### Option 1: attach the file
 
-## Подключение к ИИ-ассистенту
+1. Build the index: `java -jar Indexer.jar -l=java`.
+2. Attach `.index/index.db` and `.index/QUERIES.md` to the chat (use `--no-source` to publish the structure without code).
+3. Ask the assistant to read `QUERIES.md` first, then follow the chain: `meta`, type, members and calls, text by line range.
+4. After changes, refresh the index: `java -jar Indexer.jar -l=java --incremental`.
 
-1. Постройте индекс: `java -jar Indexer.jar -l=java`.
-2. Приложите к чату `.index/index.db` и `.index/QUERIES.md` (для публикации структуры без кода используйте
-   `--no-source`).
-3. Попросите ассистента сначала прочитать `QUERIES.md`, затем идти по цепочке: `meta`, тип, члены и вызовы,
-   текст по диапазону строк.
-4. После правок в проекте обновите индекс: `java -jar Indexer.jar -l=java --incremental`.
+### Option 2: MCP server
 
-## Устранение проблем
+`mcp-sql-service` is a separate Gradle module. It stores one SQLite database per workspace and serves it over MCP (Streamable HTTP, endpoint `/mcp`). It has two keys: a read key for MCP clients and a write key for uploading databases and patches.
 
-| Симптом                                                     | Что делать                                                   |
-| ----------------------------------------------------------- | ------------------------------------------------------------ |
-| `Could not find or load main class .threads=1` (PowerShell) | возьмите `-D` в кавычки: `java "-Dindexer.threads=1" -jar ...` |
-| `No suitable driver found`                                  | пересоберите через `shadowJar`; в конфигурации плагина обязателен `mergeServiceFiles()` (уже включён) |
-| `not an SQLite database, refusing to overwrite`             | по пути `-o` лежит чужой файл; утилита ничего не перезаписывает, укажите другой путь |
-| `incremental run is not possible (...)`                     | это предупреждение: опции или версия изменились, выполнен полный проход |
-| Много `resolved=0`                                          | ожидаемо для вызовов JDK и библиотек; для кода проекта проверьте, что исходники лежат в `src/main/java` или `src/test/java` |
-| `RESOLVE` в `index_errors`                                  | исчерпан бюджет резолва файла (3 с CPU); увеличьте `-Dindexer.resolve.budget.ms` или смиритесь с `resolved=0` |
-| Прогон дольше 30 с                                          | `-Dindexer.resolve.budget.ms=1500`, затем `--no-resolve`; больше потоков не помогает: каждый поток держит собственные кэши solver'а |
-| `SKIP_SIZE`                                                 | файл больше `--max-file-kb`; увеличьте лимит, если файл нужен |
+MCP tools (all read-only):
 
-## Разработка
+| Tool | Purpose |
+| --- | --- |
+| `index_info` | Start here: projects, commit, branch, counters, staleness notes; `includeSchema=true` adds the table list |
+| `find_type` | Find a type by simple name, fqn or suffix |
+| `context` | One-call overview of a type: location, supertypes, subtypes, members, dependencies, dependents, resolved callers |
+| `read_source` | Source of a type or of members by signature prefix |
+| `read_lines` | Lines `from..to` of a file (up to 400 per call) |
+| `search` | Full-text search over indexed text files |
+| `callers` | Where a method is called |
+| `sql` | One read-only SELECT/WITH on the index |
 
-Тесты (JUnit 5, AssertJ, `@TempDir`): `gradlew test`. Они покрывают разбор Java (типы, члены, сигнатуры, номера
-строк), вызовы и резолв, `module-info`, Gradle, конфиги, `.gitignore`, лимиты размера и бинарные файлы,
-синтаксические ошибки, инкрементальный режим, согласованность FTS (`integrity-check` с `rank=1`),
-идемпотентность, отсутствие `-wal` и `-shm`, `foreign_key_check` и исполнение всех SQL-блоков `QUERIES.md`.
+The service reads its settings from environment variables:
 
-Структура: `ru.mcs.indexer` (`IndexerMain`, `IndexerApp`), `cli` (picocli), `files` (выбор файлов, `.gitignore`,
-git), `db` (SQLite, транзакции, запись), `pipeline` (пул воркеров и единственный писатель), `lang` (реестр
-и индексаторы: `java`, `gradle`, `config`).
+| Variable | Meaning |
+| --- | --- |
+| `MCPSQL_DATA_DIR` | directory where the service keeps databases (`/data` in Docker) |
+| `MCPSQL_READ_KEY` | key for MCP clients (Bearer) |
+| `MCPSQL_WRITE_KEY` | key for `push` (database and patches) |
+| `MCPSQL_DOMAIN` | domain for Caddy and HTTPS (Docker Compose only) |
 
-Новый язык: класс, реализующий `LanguageIndexer` (метод `index(FileContext, FileFacts)` только собирает строки
-в буфер и должен быть потокобезопасным), и одна строка регистрации в `LanguageRegistry`. Остальной код менять
-не нужно.
+#### Deploy with Docker Compose
 
-## Ограничения
+On the server create a directory with `docker-compose.yml`, `Caddyfile` and `.env`. Caddy obtains the certificate automatically; the service itself is not exposed, only ports 80 and 443 of Caddy.
 
-- Не индексируются вызовы `this(...)` и `super(...)`.
-- Зависимости Gradle, записанные на нескольких строках, и `libs.*` из version catalog не распознаются.
-- Резолв не видит внешние JAR (по требованию проекта).
-- Инлайн-таблицы и массивы TOML хранятся сырым текстом значения.
-- Языки `javascript`, `zig`, `kotlin` пока не реализованы.
+```yaml
+services:
+  mcp-sql:
+    image: malexple/mcp-sql:${MCPSQL_TAG:-0.1.0}
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - mcp-data:/data
+    expose:
+      - "8080"
 
-## Лицензия
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - MCPSQL_DOMAIN=${MCPSQL_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - mcp-sql
 
-Исходный код распространяется по лицензии MIT, см. файл `LICENSE`.
-Лицензии используемых библиотек перечислены в `THIRD-PARTY-NOTICES.md`.
+volumes:
+  mcp-data:
+  caddy-data:
+  caddy-config:
+```
+
+`Caddyfile`:
+
+```
+{$MCPSQL_DOMAIN} {
+    reverse_proxy mcp-sql:8080
+}
+```
+
+`.env` (generate the keys on the server and keep the file private with `chmod 600 .env`):
+
+```
+MCPSQL_DOMAIN=example.com
+MCPSQL_DATA_DIR=/data
+MCPSQL_READ_KEY=<random hex>
+MCPSQL_WRITE_KEY=<random hex>
+```
+
+Before the first start, point the domain's DNS A record to the server and open TCP 80 and 443. Then:
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose logs caddy
+```
+
+Do not run `docker compose down -v`: it deletes the volumes with the databases and the certificates.
+
+#### Upload the index
+
+```powershell
+$env:MCPSQL_WRITE_KEY="<write key>"
+java -jar Indexer.jar push --server https://example.com --workspace myproject --db .index\index.db
+```
+
+The server answers with `database uploaded: {... "seq":N ...}`.
+
+#### Update with patches
+
+Every indexer run increases `seq`. A patch only applies if it continues the server's `seq`, so after a full run always upload the whole database first.
+
+```powershell
+java -jar Indexer.jar -l=java --incremental --patch-dir .index\patches --stats
+java -jar Indexer.jar push --server https://example.com --workspace myproject --patch-dir .index\patches
+```
+
+Expected: `patch: ...patch-5-6.sql.gz (seq 5 -> 6, ...)`, then `applied patch-5-6.sql.gz` and `server is now at seq 6`. If the sequence diverged (`server is at seq N; no patch ... continues it`), upload the database again with `push --db`.
+
+#### Connect to Perplexity
+
+1. Open **Plugins → Add custom → Add MCP connector → Remote** (custom connectors need a Pro, Max or Enterprise plan).
+2. Name `Indexer`, MCP server URL `https://example.com/mcp`.
+3. In **Advanced** choose Authentication `API Key` with the **read** key, Transport `Streamable HTTP`, Network access `Public`.
+4. Tick the risk acknowledgement, click **Add**, then click the connector card to enable it.
+5. In a new thread enable the connector and ask, for example, "show index_info" or "find the type IndexWriter".
+
+Use the read key only. The write key must never be given to an MCP client.
+
+## Troubleshooting
+
+| Symptom | What to do |
+| --- | --- |
+| `Could not find or load main class .threads=1` (PowerShell) | put `-D` in quotes: `java "-Dindexer.threads=1" -jar ...` |
+| `No suitable driver found` | rebuild with `shadowJar`; `mergeServiceFiles()` is required in the plugin configuration (already enabled) |
+| `not an SQLite database, refusing to overwrite` | a foreign file lies at the `-o` path; the tool overwrites nothing, choose another path |
+| `incremental run is not possible (...)` | a warning: options or version changed, a full run was done |
+| Many `resolved=0` | expected for JDK and library calls; for project code check that sources are in `src/main/java` or `src/test/java` |
+| `RESOLVE` in `index_errors` | the file resolve budget (3 s CPU) is exhausted; raise `-Dindexer.resolve.budget.ms` or accept `resolved=0` |
+| Run takes longer than 30 s | `-Dindexer.resolve.budget.ms=1500`, then `--no-resolve`; more threads do not help: each thread keeps its own solver caches |
+| `SKIP_SIZE` | the file is larger than `--max-file-kb`; raise the limit if you need it |
+| `patch: no data changes, no patch written` | file hashes match the database; edit a file and run again |
+| `server is at seq N; no patch ... continues it` | upload the whole database with `push --db` and delete old patches |
+| New files are not indexed | the list comes from `git ls-files`; add the file to git (`git add`) |
+| MCP client gets 401 | check the read key and the `Authorization: Bearer` header; see `docker compose logs mcp-sql` |
+
+## Development
+
+Tests (JUnit 5, AssertJ, `@TempDir`): `gradlew test`. They cover Java parsing (types, members, signatures, line numbers), calls and resolve, `module-info`, Gradle, configs, `.gitignore`, size limits and binary files, syntax errors, incremental mode, FTS consistency (`integrity-check` with `rank=1`), idempotence, absence of `-wal` and `-shm`, `foreign_key_check` and execution of all SQL blocks of `QUERIES.md`.
+
+Structure: `ru.mcs.indexer` (`IndexerMain`, `IndexerApp`), `cli` (picocli), `files` (file selection, `.gitignore`, git), `db` (SQLite, transactions, writing), `pipeline` (worker pool and a single writer), `lang` (registry and indexers: `java`, `gradle`, `config`).
+
+A new language: a class implementing `LanguageIndexer` (the `index(FileContext, FileFacts)` method only collects rows into a buffer and must be thread-safe) and one registration line in `LanguageRegistry`. No other code needs to change.
+
+## Limitations
+
+- `this(...)` and `super(...)` calls are not indexed.
+- Gradle dependencies written on several lines and `libs.*` from a version catalog are not recognised.
+- Resolve does not see external JARs (by project design).
+- Inline TOML tables and arrays are stored as the raw value text.
+- The languages `javascript`, `zig` and `kotlin` are not implemented yet.
+- The MCP service is read-only for clients: it cannot modify your code.
+
+## License
+
+The source code is distributed under the MIT license, see `LICENSE`. Licenses of the bundled libraries are listed in `THIRD-PARTY-NOTICES.md`.
