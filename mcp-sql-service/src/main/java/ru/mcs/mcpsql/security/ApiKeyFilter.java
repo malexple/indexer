@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import ru.mcs.mcpsql.config.ServiceProperties;
@@ -16,6 +17,7 @@ import java.security.MessageDigest;
 
 /** /api/** needs the write key; everything else except /health needs the read or the write key. */
 @Component
+@Order(10)
 public class ApiKeyFilter extends OncePerRequestFilter {
 
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyFilter.class);
