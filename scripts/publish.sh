@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Build and publish the images mcp-sql, mcp-sql-bot and mcp-sql-web.
+# The version comes from gradle.properties unless it is given as an argument.
 # Before the first run: docker login
 # Usage: scripts/publish.sh [version] [--skip-tests] [--no-latest] [--no-push]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="0.1.0"
+VERSION=""
 REGISTRY="${REGISTRY:-malexple}"
 SKIP_TESTS=0
 NO_LATEST=0
@@ -18,6 +19,12 @@ for arg in "$@"; do
     *) VERSION="$arg" ;;
   esac
 done
+
+if [ -z "$VERSION" ]; then
+  VERSION="$(grep -E '^[[:space:]]*version[[:space:]]*=' gradle.properties | head -1 | cut -d= -f2 | tr -d '[:space:]')"
+fi
+[ -n "$VERSION" ] || { echo "version is not set in gradle.properties"; exit 1; }
+echo "Version: $VERSION"
 
 [ "$SKIP_TESTS" = 1 ] || ./gradlew test
 ./gradlew :mcp-sql-service:bootJar :mcp-sql-bot:bootJar :mcp-sql-web:bootJar

@@ -2,7 +2,6 @@ subprojects {
     apply plugin: 'java'
 
     group = 'ru.mcs.indexer'
-    version = '1.1.0'
 
     repositories {
         mavenCentral()
@@ -20,5 +19,71 @@ subprojects {
             exceptionFormat = 'full'
             showStandardStreams = false
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Release: ./gradlew clean release
+// Result in build/release: indexer-<version>.jar, mcp-sql-<version>.jar, mcp-sql-<version>.zip, SHA256SUMS.txt.
+// The version comes from gradle.properties and is the same in every module.
+// ---------------------------------------------------------------------------------------------
+def releaseVersion = project.version.toString()
+
+tasks.register('releaseJars', Copy) {
+    dependsOn ':indexer-cli:shadowJar', ':mcp-sql-service:bootJar'
+    from(project(':indexer-cli').layout.buildDirectory.file('libs/Indexer.jar')) {
+        rename { "indexer-${releaseVersion}.jar" }
+    }
+    from(project(':mcp-sql-service').layout.buildDirectory.file('libs/app.jar')) {
+        rename { "mcp-sql-${releaseVersion}.jar" }
+    }
+    into layout.buildDirectory.dir('release')
+}
+
+tasks.register('releaseZip', Zip) {
+    dependsOn 'releaseJars'
+    archiveFileName = "mcp-sql-${releaseVersion}.zip"
+    destinationDirectory = layout.buildDirectory.dir('release')
+    into("mcp-sql-${releaseVersion}") {
+        from(layout.buildDirectory.dir('release')) { include '*.jar' }
+        from 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'README.MD', 'README_ru.md'
+        into('deploy') {
+            from('mcp-sql-service') { include 'docker-compose.yml', 'Caddyfile', '.env.example', 'DEPLOY.md' }
+        }
+        into('scripts') {
+            from 'scripts/local'
+        }
+    }
+}
+
+tasks.register('release') {
+    group = 'distribution'
+    description = 'Runs all tests and builds the release files in build/release'
+    dependsOn subprojects.collect { "${it.path}:test" }
+    dependsOn 'releaseZip'
+    def releaseDir = layout.buildDirectory.dir('release')
+    doFirst {
+        subprojects.each {
+            if (it.version.toString() != project.version.toString()) {
+                throw new GradleException("Module ${it.path} has version ${it.version}, expected ${project.version}. Set the version only in gradle.properties.")
+            }
+        }
+    }
+    doLast {
+        def dir = releaseDir.get().asFile
+        def sums = new StringBuilder()
+        dir.listFiles().findAll { it.isFile() && it.name != 'SHA256SUMS.txt' }.sort { it.name }.each { f ->
+            def md = java.security.MessageDigest.getInstance('SHA-256')
+            f.withInputStream { s ->
+                byte[] buffer = new byte[65536]
+                int n
+                while ((n = s.read(buffer)) > 0) {
+                    md.update(buffer, 0, n)
+                }
+            }
+            sums << md.digest().encodeHex().toString() << '  ' << f.name << '\n'
+        }
+        new File(dir, 'SHA256SUMS.txt').text = sums.toString()
+        println "Release ${project.version}: ${dir}"
     }
 }

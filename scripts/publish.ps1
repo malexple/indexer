@@ -1,11 +1,12 @@
 # Build and publish the images mcp-sql, mcp-sql-bot and mcp-sql-web.
+# The version comes from gradle.properties unless -Version is given.
 # Before the first run: docker login
 # Examples:
-#   .\scripts\publish.ps1 -Version 0.1.0 -NoPush
-#   .\scripts\publish.ps1 -Version 0.1.1
-#   .\scripts\publish.ps1 -Version 0.1.1 -SkipTests -NoLatest
+#   .\scripts\publish.ps1 -NoPush
+#   .\scripts\publish.ps1
+#   .\scripts\publish.ps1 -SkipTests -NoLatest
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "",
     [string]$Registry = "malexple",
     [switch]$SkipTests,
     [switch]$NoLatest,
@@ -15,11 +16,20 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
+function Get-ProjectVersion {
+    $line = Get-Content "gradle.properties" | Where-Object { $_ -match '^\s*version\s*=' } | Select-Object -First 1
+    if (-not $line) { throw "version is not set in gradle.properties" }
+    return ($line -split '=', 2)[1].Trim()
+}
+
 function Run([string]$Command) {
     Write-Host ">> $Command" -ForegroundColor Cyan
     Invoke-Expression $Command
     if ($LASTEXITCODE -ne 0) { throw "Command failed: $Command" }
 }
+
+if (-not $Version) { $Version = Get-ProjectVersion }
+Write-Host "Version: $Version" -ForegroundColor Green
 
 if (-not $SkipTests) { Run ".\gradlew.bat test" }
 Run ".\gradlew.bat :mcp-sql-service:bootJar :mcp-sql-bot:bootJar :mcp-sql-web:bootJar"
