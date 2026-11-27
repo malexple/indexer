@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -13,7 +14,9 @@ import ru.mcs.mcpsql.config.MultiUserProperties;
 import ru.mcs.mcpsql.config.ServiceProperties;
 import ru.mcs.mcpsql.users.KeyService;
 import ru.mcs.mcpsql.users.Principal;
+import ru.mcs.mcpsql.users.QuotaException;
 import ru.mcs.mcpsql.users.Scope;
+import ru.mcs.mcpsql.users.UsageService;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -24,7 +27,8 @@ import java.util.Optional;
 /**
  * /api/** needs a write key; /internal/** needs the internal key (multi-user mode only); everything else except
  * /health needs a read or a write key. Local mode compares with the two configured keys; multi-user mode looks
- * the key up in the user database. The result is stored in the request as a {@link Principal}.
+ * the key up in the user database and counts every POST to /mcp against the user's daily request limit.
+ * The result is stored in the request as a {@link Principal}.
  */
 @Component
 @Order(10)
@@ -39,13 +43,21 @@ public class ApiKeyFilter extends OncePerRequestFilter {
     private final byte[] internalKey;
     private final boolean multi;
     private final KeyService keys;
+    private final UsageService usage;
 
     public ApiKeyFilter(ServiceProperties properties, MultiUserProperties multiProperties, Optional<KeyService> keys) {
+        this(properties, multiProperties, keys, Optional.empty());
+    }
+
+    @Autowired
+    public ApiKeyFilter(ServiceProperties properties, MultiUserProperties multiProperties, Optional<KeyService> keys,
+                        Optional<UsageService> usage) {
         this.readKey = properties.readKey().getBytes(StandardCharsets.UTF_8);
         this.writeKey = properties.writeKey().getBytes(StandardCharsets.UTF_8);
         this.internalKey = multiProperties.internalKey().getBytes(StandardCharsets.UTF_8);
         this.multi = multiProperties.enabled();
         this.keys = keys.orElse(null);
+        this.usage = usage.orElse(null);
         if (multi && this.keys == null) {
             throw new IllegalStateException("multi-user mode needs the key service");
         }
@@ -87,6 +99,14 @@ public class ApiKeyFilter extends OncePerRequestFilter {
             return;
         }
         request.setAttribute(PRINCIPAL_ATTR, principal);
+        if (usage != null && "POST".equals(request.getMethod()) && path.startsWith("/mcp")) {
+            try {
+                usage.recordRequest(principal.userId(), Instant.now());
+            } catch (QuotaException e) {
+                tooManyRequests(response, e.getMessage());
+                return;
+            }
+        }
         chain.doFilter(request, response);
     }
 
@@ -109,6 +129,12 @@ public class ApiKeyFilter extends OncePerRequestFilter {
         response.setHeader("WWW-Authenticate", "Bearer");
         response.setContentType("text/plain;charset=UTF-8");
         response.getWriter().write("unauthorized");
+    }
+
+    private static void tooManyRequests(HttpServletResponse response, String message) throws IOException {
+        response.setStatus(429);
+        response.setContentType("text/plain;charset=UTF-8");
+        response.getWriter().write(message);
     }
 
     private static String token(HttpServletRequest request) {

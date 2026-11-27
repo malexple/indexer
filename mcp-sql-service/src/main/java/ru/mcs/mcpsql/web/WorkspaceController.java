@@ -1,6 +1,7 @@
 package ru.mcs.mcpsql.web;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -13,23 +14,39 @@ import org.springframework.web.bind.annotation.RestController;
 import ru.mcs.indexer.patch.PatchApplier;
 import ru.mcs.mcpsql.security.ApiKeyFilter;
 import ru.mcs.mcpsql.users.Principal;
+import ru.mcs.mcpsql.users.QuotaException;
+import ru.mcs.mcpsql.users.UsageService;
+import ru.mcs.mcpsql.users.UsageToday;
+import ru.mcs.mcpsql.workspace.InsufficientStorageException;
 import ru.mcs.mcpsql.workspace.WorkspaceInfo;
 import ru.mcs.mcpsql.workspace.WorkspaceService;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 
 @RestController
 public class WorkspaceController {
 
     private final WorkspaceService workspaces;
+    private final UsageService usage;
 
     public WorkspaceController(WorkspaceService workspaces) {
+        this(workspaces, Optional.empty());
+    }
+
+    @Autowired
+    public WorkspaceController(WorkspaceService workspaces, Optional<UsageService> usage) {
         this.workspaces = workspaces;
+        this.usage = usage.orElse(null);
     }
 
     @GetMapping("/health")
@@ -58,16 +75,52 @@ public class WorkspaceController {
         return workspaces.info(key(request, workspace));
     }
 
+    @GetMapping("/api/usage")
+    public Map<String, Object> usage(HttpServletRequest request) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("multiUser", usage != null);
+        if (usage != null) {
+            UsageToday today = usage.today(owner(request), Instant.now());
+            body.put("today", today);
+            body.put("limits", usage.limits());
+        }
+        return body;
+    }
+
     @PutMapping("/api/workspaces/{workspace}/db")
     public WorkspaceInfo putDatabase(@PathVariable String workspace, HttpServletRequest request)
             throws IOException, SQLException {
-        return workspaces.putDatabase(key(request, workspace), request.getInputStream());
+        String key = key(request, workspace);
+        if (usage == null) {
+            return workspaces.putDatabase(key, request.getInputStream());
+        }
+        long owner = owner(request);
+        usage.checkUpload(owner, Instant.now());
+        Counting in = new Counting(request.getInputStream());
+        try {
+            return workspaces.putDatabase(key, in);
+        } finally {
+            usage.recordUpload(owner, in.count(), Instant.now());
+        }
     }
 
     @PostMapping("/api/workspaces/{workspace}/patch")
     public Map<String, Object> applyPatch(@PathVariable String workspace, HttpServletRequest request)
             throws IOException, SQLException {
-        PatchApplier.Result result = workspaces.applyPatch(key(request, workspace), request.getInputStream());
+        String key = key(request, workspace);
+        PatchApplier.Result result;
+        if (usage == null) {
+            result = workspaces.applyPatch(key, request.getInputStream());
+        } else {
+            long owner = owner(request);
+            usage.checkPatch(owner, Instant.now());
+            Counting in = new Counting(request.getInputStream());
+            try {
+                result = workspaces.applyPatch(key, in);
+            } finally {
+                usage.recordPatch(owner, in.count(), Instant.now());
+            }
+        }
         return Map.of("workspace", workspace, "fromSeq", result.fromSeq(), "toSeq", result.toSeq());
     }
 
@@ -90,9 +143,51 @@ public class WorkspaceController {
         return principal.userId();
     }
 
+    private static final class Counting extends FilterInputStream {
+
+        private long count;
+
+        Counting(InputStream in) {
+            super(in);
+        }
+
+        long count() {
+            return count;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int b = super.read();
+            if (b >= 0) {
+                count++;
+            }
+            return b;
+        }
+
+        @Override
+        public int read(byte[] buffer, int off, int len) throws IOException {
+            int n = super.read(buffer, off, len);
+            if (n > 0) {
+                count += n;
+            }
+            return n;
+        }
+    }
+
     @ExceptionHandler(SecurityException.class)
     ResponseEntity<Map<String, String>> unauthorized(SecurityException e) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", String.valueOf(e.getMessage())));
+    }
+
+    @ExceptionHandler(QuotaException.class)
+    ResponseEntity<Map<String, String>> quota(QuotaException e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(Map.of("code", e.kind().name(), "error", String.valueOf(e.getMessage())));
+    }
+
+    @ExceptionHandler(InsufficientStorageException.class)
+    ResponseEntity<Map<String, String>> storage(InsufficientStorageException e) {
+        return ResponseEntity.status(HttpStatus.INSUFFICIENT_STORAGE).body(Map.of("error", String.valueOf(e.getMessage())));
     }
 
     @ExceptionHandler(NoSuchElementException.class)

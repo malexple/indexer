@@ -32,7 +32,7 @@ class WorkspaceServiceMultiTest {
     @BeforeEach
     void setUp() throws IOException {
         properties = new ServiceProperties(tmp.resolve("data"), "r", "w", 8000, 3, 200, 50);
-        service = new WorkspaceService(properties, MultiUserProperties.of(true, 50, 5).withLimits(2, 1));
+        service = new WorkspaceService(properties, MultiUserProperties.of(true, 50, 5).withLimits(2, 1).withMinFreeDiskMb(0));
     }
 
     private Path indexDb(String fileName, int padBytes) throws Exception {

@@ -11,17 +11,35 @@ public record MultiUserProperties(
         @DefaultValue("5") int keyIssuesPerDay,
         @DefaultValue("3") int maxWorkspaces,
         @DefaultValue("20") int maxDbMb,
-        @DefaultValue("") String internalKey) {
+        @DefaultValue("") String internalKey,
+        @DefaultValue("10") int uploadsPerDay,
+        @DefaultValue("300") int writeMbPerDay,
+        @DefaultValue("30") int patchIntervalSeconds,
+        @DefaultValue("5000") int requestsPerDay,
+        @DefaultValue("2048") int minFreeDiskMb) {
 
     public static MultiUserProperties of(boolean enabled, int maxActiveUsers, int keyIssuesPerDay) {
-        return new MultiUserProperties(enabled, maxActiveUsers, keyIssuesPerDay, 3, 20, "");
+        return new MultiUserProperties(enabled, maxActiveUsers, keyIssuesPerDay, 3, 20, "", 10, 300, 30, 5000, 2048);
     }
 
     public MultiUserProperties withLimits(int maxWorkspaces, int maxDbMb) {
-        return new MultiUserProperties(enabled, maxActiveUsers, keyIssuesPerDay, maxWorkspaces, maxDbMb, internalKey);
+        return new MultiUserProperties(enabled, maxActiveUsers, keyIssuesPerDay, maxWorkspaces, maxDbMb, internalKey,
+                uploadsPerDay, writeMbPerDay, patchIntervalSeconds, requestsPerDay, minFreeDiskMb);
     }
 
     public MultiUserProperties withInternalKey(String key) {
-        return new MultiUserProperties(enabled, maxActiveUsers, keyIssuesPerDay, maxWorkspaces, maxDbMb, key);
+        return new MultiUserProperties(enabled, maxActiveUsers, keyIssuesPerDay, maxWorkspaces, maxDbMb, key,
+                uploadsPerDay, writeMbPerDay, patchIntervalSeconds, requestsPerDay, minFreeDiskMb);
+    }
+
+    public MultiUserProperties withDaily(int uploadsPerDay, int writeMbPerDay, int patchIntervalSeconds,
+                                         int requestsPerDay) {
+        return new MultiUserProperties(enabled, maxActiveUsers, keyIssuesPerDay, maxWorkspaces, maxDbMb, internalKey,
+                uploadsPerDay, writeMbPerDay, patchIntervalSeconds, requestsPerDay, minFreeDiskMb);
+    }
+
+    public MultiUserProperties withMinFreeDiskMb(int minFreeDiskMb) {
+        return new MultiUserProperties(enabled, maxActiveUsers, keyIssuesPerDay, maxWorkspaces, maxDbMb, internalKey,
+                uploadsPerDay, writeMbPerDay, patchIntervalSeconds, requestsPerDay, minFreeDiskMb);
     }
 }

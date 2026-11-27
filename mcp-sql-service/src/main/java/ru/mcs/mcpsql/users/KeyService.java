@@ -191,6 +191,38 @@ public class KeyService {
         }
     }
 
+    public boolean hasActiveKeys(long userId, Instant now) {
+        try (Connection c = db.open()) {
+            return longOf(c, "SELECT COUNT(*) FROM key_pairs WHERE user_id = ? "
+                    + "AND revoked_at IS NULL AND expires_at > ?", userId, now.getEpochSecond()) > 0;
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot check keys: " + e.getMessage(), e);
+        }
+    }
+
+    /** Deletes all key rows of a user who has no live pair; the user row and the counters stay. */
+    public synchronized int purgeKeys(long userId, Instant now) {
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                if (longOf(c, "SELECT COUNT(*) FROM key_pairs WHERE user_id = ? "
+                        + "AND revoked_at IS NULL AND expires_at > ?", userId, now.getEpochSecond()) > 0) {
+                    c.rollback();
+                    return 0;
+                }
+                int count = (int) longOf(c, "SELECT COUNT(*) FROM key_pairs WHERE user_id = ?", userId);
+                update(c, "DELETE FROM key_pairs WHERE user_id = ?", userId);
+                c.commit();
+                return count;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot purge keys: " + e.getMessage(), e);
+        }
+    }
+
     private static long activeUsers(Connection c, long t) throws SQLException {
         return longOf(c, "SELECT COUNT(DISTINCT user_id) FROM key_pairs WHERE revoked_at IS NULL AND expires_at > ?", t);
     }

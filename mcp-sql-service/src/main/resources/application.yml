@@ -30,3 +30,8 @@ mcpsql:
     key-issues-per-day: ${MCPSQL_KEY_ISSUES_PER_DAY:5}
     max-workspaces: ${MCPSQL_MAX_WORKSPACES:3}
     max-db-mb: ${MCPSQL_MAX_DB_MB:20}
+    uploads-per-day: ${MCPSQL_UPLOADS_PER_DAY:10}
+    write-mb-per-day: ${MCPSQL_WRITE_MB_PER_DAY:300}
+    patch-interval-seconds: ${MCPSQL_PATCH_INTERVAL_SECONDS:30}
+    requests-per-day: ${MCPSQL_REQUESTS_PER_DAY:5000}
+    min-free-disk-mb: ${MCPSQL_MIN_FREE_DISK_MB:2048}

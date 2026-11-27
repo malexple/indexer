@@ -42,6 +42,7 @@ public class WorkspaceService {
     private final boolean multi;
     private final int maxWorkspaces;
     private final long maxDbBytes;
+    private final long minFreeBytes;
     private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
 
     @Autowired
@@ -51,6 +52,7 @@ public class WorkspaceService {
         this.multi = multiProperties.enabled();
         this.maxWorkspaces = multiProperties.maxWorkspaces();
         this.maxDbBytes = multiProperties.maxDbMb() * MB;
+        this.minFreeBytes = multi ? multiProperties.minFreeDiskMb() * MB : 0;
         Files.createDirectories(dir);
     }
 
@@ -167,6 +169,7 @@ public class WorkspaceService {
         WorkspaceKey key = WorkspaceKey.parse(workspace);
         Path target = dbPath(key);
         long limit = limitFor(key);
+        ensureFreeSpace();
         Path upload = temp();
         Path ready = upload;
         try {
@@ -194,6 +197,7 @@ public class WorkspaceService {
         WorkspaceKey key = WorkspaceKey.parse(workspace);
         Path target = dbPath(key);
         long limit = limitFor(key);
+        ensureFreeSpace();
         Path patch = temp();
         Path work = temp();
         try {
@@ -246,6 +250,26 @@ public class WorkspaceService {
             }
             Files.deleteIfExists(userDir);
             return count;
+        }
+    }
+
+    /** Ids of the users that have a directory on disk. */
+    public List<Long> ownersOnDisk() throws IOException {
+        Path users = dir.resolve("users");
+        if (!Files.isDirectory(users)) {
+            return List.of();
+        }
+        try (Stream<Path> entries = Files.list(users)) {
+            return entries.filter(Files::isDirectory)
+                    .map(p -> p.getFileName().toString())
+                    .filter(n -> !n.isEmpty() && n.length() <= 18 && n.chars().allMatch(ch -> ch >= '0' && ch <= '9'))
+                    .map(Long::parseLong).sorted().toList();
+        }
+    }
+
+    private void ensureFreeSpace() throws IOException {
+        if (minFreeBytes > 0 && Files.getFileStore(dir).getUsableSpace() < minFreeBytes) {
+            throw new InsufficientStorageException("the server is low on disk space, try again later");
         }
     }
 

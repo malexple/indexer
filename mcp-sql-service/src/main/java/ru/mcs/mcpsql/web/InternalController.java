@@ -56,6 +56,7 @@ public class InternalController {
                 case KEY_ISSUE_LIMIT -> HttpStatus.TOO_MANY_REQUESTS;
                 case CAPACITY -> HttpStatus.SERVICE_UNAVAILABLE;
                 case BANNED -> HttpStatus.FORBIDDEN;
+                default -> HttpStatus.TOO_MANY_REQUESTS;
             };
             return ResponseEntity.status(status).body(Map.of("code", e.kind().name(), "error", e.getMessage()));
         }

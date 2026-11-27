@@ -5,7 +5,11 @@ public class QuotaException extends RuntimeException {
     public enum Kind {
         KEY_ISSUE_LIMIT,
         CAPACITY,
-        BANNED
+        BANNED,
+        UPLOAD_LIMIT,
+        WRITE_BYTES_LIMIT,
+        PATCH_INTERVAL,
+        REQUEST_LIMIT
     }
 
     private final Kind kind;

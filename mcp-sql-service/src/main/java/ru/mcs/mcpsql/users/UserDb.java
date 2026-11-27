@@ -39,7 +39,10 @@ public final class UserDb {
                     + "requests INTEGER NOT NULL DEFAULT 0, "
                     + "response_bytes INTEGER NOT NULL DEFAULT 0, "
                     + "key_issues INTEGER NOT NULL DEFAULT 0, "
-                    + "PRIMARY KEY (user_id, day))");
+                    + "PRIMARY KEY (user_id, day))",
+            "CREATE TABLE IF NOT EXISTS user_state ("
+                    + "user_id INTEGER PRIMARY KEY REFERENCES users(id), "
+                    + "last_patch_at INTEGER NOT NULL DEFAULT 0)");
 
     private final String url;
 
@@ -51,7 +54,7 @@ public final class UserDb {
             for (String ddl : SCHEMA) {
                 s.execute(ddl);
             }
-            s.execute("PRAGMA user_version = 1");
+            s.execute("PRAGMA user_version = 2");
         } catch (SQLException e) {
             throw new IOException("cannot open " + absolute + ": " + e.getMessage(), e);
         }
