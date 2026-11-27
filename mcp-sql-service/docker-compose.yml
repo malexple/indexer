@@ -19,6 +19,16 @@ services:
     depends_on:
       - mcp-sql
 
+  mcp-sql-web:
+    image: malexple/mcp-sql-web:${MCPSQL_TAG:-0.1.0}
+    restart: unless-stopped
+    environment:
+      SITE_SERVICE_URL: http://mcp-sql:8080
+    expose:
+      - "8080"
+    depends_on:
+      - mcp-sql
+
   caddy:
     image: caddy:2
     restart: unless-stopped

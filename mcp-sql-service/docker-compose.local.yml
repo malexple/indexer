@@ -12,3 +12,11 @@ services:
       context: ../mcp-sql-bot
       dockerfile: Dockerfile
     image: malexple/mcp-sql-bot:local
+
+  mcp-sql-web:
+    build:
+      context: ../mcp-sql-web
+      dockerfile: Dockerfile
+    image: malexple/mcp-sql-web:local
+    ports:
+      - "127.0.0.1:8081:8080"

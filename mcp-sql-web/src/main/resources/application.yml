@@ -1,0 +1,10 @@
+spring:
+  main:
+    banner-mode: "off"
+
+server:
+  port: 8080
+  shutdown: graceful
+
+site:
+  service-url: ${SITE_SERVICE_URL:http://mcp-sql:8080}

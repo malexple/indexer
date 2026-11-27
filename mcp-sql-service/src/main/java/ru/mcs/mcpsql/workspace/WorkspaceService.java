@@ -253,6 +253,29 @@ public class WorkspaceService {
         }
     }
 
+    /** Total size of all users' database files. */
+    public long usedBytes() throws IOException {
+        long total = 0;
+        for (long owner : ownersOnDisk()) {
+            try (Stream<Path> files = Files.list(userDir(owner))) {
+                for (Path file : files.toList()) {
+                    try {
+                        total += Files.size(file);
+                    } catch (java.nio.file.NoSuchFileException e) {
+                        // deleted while counting
+                    }
+                }
+            } catch (java.nio.file.NoSuchFileException e) {
+                // the directory went away while counting
+            }
+        }
+        return total;
+    }
+
+    public long freeBytes() throws IOException {
+        return Files.getFileStore(dir).getUsableSpace();
+    }
+
     /** Ids of the users that have a directory on disk. */
     public List<Long> ownersOnDisk() throws IOException {
         Path users = dir.resolve("users");

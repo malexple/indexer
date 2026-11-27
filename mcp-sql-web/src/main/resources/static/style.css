@@ -1,0 +1,30 @@
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1c2430; background: #f6f8fa; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+.hero { background: #14213d; color: #fff; padding: 56px 0 44px; }
+.hero h1 { margin: 0 0 8px; font-size: 40px; letter-spacing: -0.5px; }
+.lead { font-size: 19px; max-width: 640px; color: #d6deeb; }
+.button { display: inline-block; background: #fca311; color: #14213d; font-weight: 600; padding: 12px 22px; border-radius: 8px; text-decoration: none; }
+.button:hover { background: #ffb73d; }
+section { background: #fff; border: 1px solid #e1e6ec; border-radius: 12px; padding: 22px 24px; margin: 24px 0; }
+h2 { margin-top: 0; font-size: 22px; }
+a { color: #0b63c5; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }
+code { background: #eef2f6; padding: 1px 5px; border-radius: 4px; }
+pre { background: #0f1720; color: #e6edf3; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+pre code { background: none; padding: 0; color: inherit; }
+.steps li { margin-bottom: 10px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.card { background: #f6f8fa; border: 1px solid #e1e6ec; border-radius: 10px; padding: 14px 16px; }
+.num { font-size: 30px; font-weight: 700; }
+.label { color: #566275; font-size: 14px; }
+.bar-label { margin: 18px 0 6px; font-size: 14px; color: #566275; }
+.bar { height: 12px; background: #e1e6ec; border-radius: 6px; overflow: hidden; }
+.bar span { display: block; height: 100%; width: 0; background: #2a9d8f; transition: width .4s; }
+.bar span.full { background: #d62828; }
+.muted { color: #566275; font-size: 14px; }
+.notice { background: #fff4e0; border: 1px solid #f4c77d; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+.limits { width: 100%; border-collapse: collapse; }
+.limits td { padding: 8px 4px; border-bottom: 1px solid #eef1f5; }
+.limits td:last-child { text-align: right; font-weight: 600; white-space: nowrap; }
+footer { padding-bottom: 40px; }
