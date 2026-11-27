@@ -1,0 +1,4 @@
+src
+.gradle
+build/*
+!build/libs/app.jar

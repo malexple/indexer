@@ -6,3 +6,9 @@ services:
     image: malexple/mcp-sql:local
     ports:
       - "127.0.0.1:8080:8080"
+
+  mcp-sql-bot:
+    build:
+      context: ../mcp-sql-bot
+      dockerfile: Dockerfile
+    image: malexple/mcp-sql-bot:local

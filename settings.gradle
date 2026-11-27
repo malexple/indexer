@@ -1,4 +1,4 @@
 rootProject.name = 'indexer'
 
-include 'indexer-core', 'indexer-cli', 'mcp-sql-service'
+include 'indexer-core', 'indexer-cli', 'mcp-sql-service', 'mcp-sql-bot'
 

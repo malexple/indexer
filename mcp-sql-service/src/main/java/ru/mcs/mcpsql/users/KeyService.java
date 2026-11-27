@@ -191,6 +191,33 @@ public class KeyService {
         }
     }
 
+    public Optional<Long> userIdOf(long tgId) {
+        try (Connection c = db.open()) {
+            List<Long> ids = longs(c, "SELECT id FROM users WHERE tg_id = ?", tgId);
+            return ids.isEmpty() ? Optional.empty() : Optional.of(ids.get(0));
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot look up a user: " + e.getMessage(), e);
+        }
+    }
+
+    /** The newest pair that is alive now, if any. */
+    public Optional<ActivePair> activePair(long userId, Instant now) {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("SELECT ttl_kind, created_at, expires_at FROM key_pairs "
+                     + "WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1")) {
+            ps.setLong(1, userId);
+            ps.setLong(2, now.getEpochSecond());
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next()
+                        ? Optional.of(new ActivePair(TtlKind.parse(rs.getString(1)),
+                                Instant.ofEpochSecond(rs.getLong(2)), Instant.ofEpochSecond(rs.getLong(3))))
+                        : Optional.empty();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot read the key pair: " + e.getMessage(), e);
+        }
+    }
+
     public boolean hasActiveKeys(long userId, Instant now) {
         try (Connection c = db.open()) {
             return longOf(c, "SELECT COUNT(*) FROM key_pairs WHERE user_id = ? "

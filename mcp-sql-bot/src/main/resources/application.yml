@@ -1,0 +1,11 @@
+spring:
+  main:
+    banner-mode: "off"
+
+bot:
+  token: ${BOT_TOKEN:}
+  service-url: ${BOT_SERVICE_URL:http://mcp-sql:8080}
+  internal-key: ${BOT_INTERNAL_KEY:}
+  public-url: ${BOT_PUBLIC_URL:}
+  telegram-url: ${BOT_TELEGRAM_URL:https://api.telegram.org}
+  poll-seconds: ${BOT_POLL_SECONDS:50}

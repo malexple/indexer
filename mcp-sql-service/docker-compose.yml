@@ -8,6 +8,17 @@ services:
     expose:
       - "8080"
 
+  mcp-sql-bot:
+    image: malexple/mcp-sql-bot:${MCPSQL_TAG:-0.1.0}
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      BOT_SERVICE_URL: http://mcp-sql:8080
+      BOT_INTERNAL_KEY: ${MCPSQL_INTERNAL_KEY:-}
+      BOT_PUBLIC_URL: ${BOT_PUBLIC_URL:-}
+    depends_on:
+      - mcp-sql
+
   caddy:
     image: caddy:2
     restart: unless-stopped
