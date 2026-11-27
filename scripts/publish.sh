@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Сборка и публикация образов mcp-sql, mcp-sql-bot и mcp-sql-web.
-# Перед первым запуском: docker login
-# Использование: scripts/publish.sh [версия] [--skip-tests] [--no-latest] [--no-push]
+# Build and publish the images mcp-sql, mcp-sql-bot and mcp-sql-web.
+# Before the first run: docker login
+# Usage: scripts/publish.sh [version] [--skip-tests] [--no-latest] [--no-push]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,7 +32,7 @@ for entry in "${IMAGES[@]}"; do
 done
 
 if [ "$NO_PUSH" = 1 ]; then
-  echo "Образы собраны, публикация пропущена (--no-push)."
+  echo "Images are built, push skipped (--no-push)."
   exit 0
 fi
 
@@ -42,4 +42,4 @@ for entry in "${IMAGES[@]}"; do
   [ "$NO_LATEST" = 1 ] || docker push "$REGISTRY/$name:latest"
 done
 
-echo "Готово: версия $VERSION. На сервере: MCPSQL_TAG=$VERSION в .env, затем docker compose pull && docker compose up -d"
+echo "Done, version $VERSION. On the server set MCPSQL_TAG=$VERSION in .env, then: docker compose pull && docker compose up -d"

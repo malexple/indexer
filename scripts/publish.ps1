@@ -1,7 +1,8 @@
-# Сборка и публикация образов mcp-sql, mcp-sql-bot и mcp-sql-web.
-# Перед первым запуском: docker login
-# Примеры:
-#   .\scripts\publish.ps1 -Version 0.1.0
+# Build and publish the images mcp-sql, mcp-sql-bot and mcp-sql-web.
+# Before the first run: docker login
+# Examples:
+#   .\scripts\publish.ps1 -Version 0.1.0 -NoPush
+#   .\scripts\publish.ps1 -Version 0.1.1
 #   .\scripts\publish.ps1 -Version 0.1.1 -SkipTests -NoLatest
 param(
     [string]$Version = "0.1.0",
@@ -17,7 +18,7 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 function Run([string]$Command) {
     Write-Host ">> $Command" -ForegroundColor Cyan
     Invoke-Expression $Command
-    if ($LASTEXITCODE -ne 0) { throw "Команда завершилась с ошибкой: $Command" }
+    if ($LASTEXITCODE -ne 0) { throw "Command failed: $Command" }
 }
 
 if (-not $SkipTests) { Run ".\gradlew.bat test" }
@@ -37,7 +38,7 @@ foreach ($image in $images) {
 }
 
 if ($NoPush) {
-    Write-Host "Образы собраны, публикация пропущена (-NoPush)." -ForegroundColor Yellow
+    Write-Host "Images are built, push skipped (-NoPush)." -ForegroundColor Yellow
     exit 0
 }
 
@@ -47,4 +48,4 @@ foreach ($image in $images) {
     if (-not $NoLatest) { Run "docker push ${repo}:latest" }
 }
 
-Write-Host "Готово: версия $Version. На сервере: задайте MCPSQL_TAG=$Version в .env, затем docker compose pull; docker compose up -d" -ForegroundColor Green
+Write-Host "Done, version $Version. On the server set MCPSQL_TAG=$Version in .env, then run: docker compose pull; docker compose up -d" -ForegroundColor Green

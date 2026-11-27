@@ -6,6 +6,7 @@ Indexer is a console tool that walks a project directory, parses the sources int
 
 - **Attach the file to a chat.** The assistant runs SQL on `index.db` (Python `sqlite3`, no internet), finds classes, methods, calls and dependencies, and reads source text by line range.
 - **Publish it to an MCP server.** `mcp-sql-service` keeps the database on a server and exposes it over MCP (Streamable HTTP) to Perplexity or any other MCP client. After code changes you upload only a small patch.
+- **Host it for many users.** The same service can run in multi-user mode: a Telegram bot (`@mcp_sql_bot`) issues short-lived key pairs, every user gets isolated databases with limits, and a small website shows the public statistics.
 
 What the index contains: files with text, Java types and members (signatures and line numbers), calls and type dependencies, imports and annotations, `module-info.java`, Gradle modules and dependencies, flat keys from yml/yaml/json/properties/toml, full-text search (FTS5) and git metadata.
 
@@ -258,68 +259,93 @@ The service reads its settings from environment variables:
 | `MCPSQL_WRITE_KEY` | key for `push` (database and patches) |
 | `MCPSQL_DOMAIN` | domain for Caddy and HTTPS (Docker Compose only) |
 
-#### Deploy with Docker Compose
+#### Addresses
 
-On the server create a directory with `docker-compose.yml`, `Caddyfile` and `.env`. Caddy obtains the certificate automatically; the service itself is not exposed, only ports 80 and 443 of Caddy.
+| Address | What it serves |
+| --- | --- |
+| `/mcp` | All workspaces of the key's owner; pass the `workspace` argument when there are several |
+| `/mcp/{workspace}` | One workspace; the server fills in the `workspace` argument |
+| `/mcp/{workspace}/{project}` | One project inside a workspace; the server fills in `workspace` and `project` |
 
-```yaml
-services:
-  mcp-sql:
-    image: malexple/mcp-sql:${MCPSQL_TAG:-0.1.0}
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - mcp-data:/data
-    expose:
-      - "8080"
+On the two bound addresses the values from the path win: a tool call that names another workspace or project is refused. An unknown workspace answers `404 not found`.
 
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      - MCPSQL_DOMAIN=${MCPSQL_DOMAIN}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - mcp-sql
+REST API (write key): `GET /api/workspaces`, `GET /api/workspaces/{workspace}`, `PUT /api/workspaces/{workspace}/db`, `POST /api/workspaces/{workspace}/patch`, `DELETE /api/workspaces/{workspace}` and, in multi-user mode, `GET /api/usage` (today's counters and limits). `GET /health` needs no key.
 
-volumes:
-  mcp-data:
-  caddy-data:
-  caddy-config:
-```
+#### Single-user and multi-user mode
 
-`Caddyfile`:
+By default (`MCPSQL_MULTI_ENABLED=false`) the service has one owner and two static keys from the environment (`MCPSQL_READ_KEY`, `MCPSQL_WRITE_KEY`); the databases lie directly in `MCPSQL_DATA_DIR`. This is the mode for your own machine or a private server.
+
+With `MCPSQL_MULTI_ENABLED=true` the static keys are ignored. Keys are issued per user by a Telegram bot, every user has a private directory `users/{id}/` inside the data directory, and the limits below apply.
+
+#### Hosted multi-user service
+
+How a user works with it:
+
+1. Open the bot (`@mcp_sql_bot`), press **Get keys** and choose a lifetime: 5 hours, 1 day or 7 days. The bot sends two keys. The write key (`mcp_w_...`) is yours: upload, patches, delete; it can read as well. The read key (`mcp_r_...`) is for the AI assistant and can only read. Both are shown once; the server stores only their SHA-256 hashes.
+2. Upload the index with the write key (`push`, see below).
+3. Give the AI assistant the read key and the address `https://<domain>/mcp/<workspace>`.
+
+The bot menu also has **My data** (key expiry, databases, today's usage and limits), **Statistics**, **Help** and **Delete everything**. The last one revokes the keys and deletes the user's databases at once. It is always available, also when the daily key limit is used up, and it gives the day's key issues back, so a user whose keys leaked can always start again.
+
+Lifetime of data: a new pair of keys replaces the previous one and restarts the lifetime of the user's databases. When the keys expire without renewal, the databases are deleted automatically (within about a minute) and then the expired key records. The user record (Telegram id) and the daily counters stay.
+
+Limits (days are UTC days; rejected uploads count too):
+
+| Limit | Default | Variable |
+| --- | --- | --- |
+| Users with live keys at the same time | 50 | `MCPSQL_MAX_ACTIVE_USERS` |
+| Key issues per user per day | 5 | `MCPSQL_KEY_ISSUES_PER_DAY` |
+| Workspaces per user | 3 | `MCPSQL_MAX_WORKSPACES` |
+| Size of one database (also after a patch) | 20 MB | `MCPSQL_MAX_DB_MB` |
+| Database uploads per day | 10 | `MCPSQL_UPLOADS_PER_DAY` |
+| Uploaded volume per day (databases and patches together) | 300 MB | `MCPSQL_WRITE_MB_PER_DAY` |
+| Pause between patches of one user | 30 s | `MCPSQL_PATCH_INTERVAL_SECONDS` |
+| MCP requests (POST to `/mcp`) per day | 5000 | `MCPSQL_REQUESTS_PER_DAY` |
+| Free disk space below which uploads are refused | 2048 MB | `MCPSQL_MIN_FREE_DISK_MB` |
+
+Refusals: `401` (no, wrong, expired or revoked key, or a read key where a write key is needed), `404` (unknown workspace; the same answer for a missing and for a foreign one), `409` (workspace limit), `429` with a JSON `code` (`KEY_ISSUE_LIMIT`, `UPLOAD_LIMIT`, `WRITE_BYTES_LIMIT`, `PATCH_INTERVAL`, `REQUEST_LIMIT`), `503` (the server is full when keys are issued), `507` (low disk space).
+
+The bot and the website are separate modules (see "Repository modules"). The bot keeps no keys and talks to the service through `/internal/*`, which needs the `X-Internal-Key` header and must never be published. The website shows aggregated statistics only: users, key pairs by lifetime, used and free disk space and the limits.
+
+#### Deploy on a server
+
+Four containers run on the server: `mcp-sql` (service), `mcp-sql-bot`, `mcp-sql-web` and `caddy` (HTTPS and routing). Only ports 80 and 443 of Caddy are open. The files are in `mcp-sql-service/`: `docker-compose.yml`, `Caddyfile` and `.env.example`; the step-by-step guide is in [`mcp-sql-service/DEPLOY.md`](mcp-sql-service/DEPLOY.md) (in Russian).
+
+`Caddyfile` (the service gets MCP and the user API, the website gets the rest, `/internal` is not published):
 
 ```
 {$MCPSQL_DOMAIN} {
-    reverse_proxy mcp-sql:8080
+    @service path /mcp /mcp/* /api/workspaces /api/workspaces/* /api/usage
+    handle @service {
+        request_body {
+            max_size 25MB
+        }
+        reverse_proxy mcp-sql:8080 {
+            flush_interval -1
+        }
+    }
+    handle {
+        encode zstd gzip
+        reverse_proxy mcp-sql-web:8080
+    }
 }
 ```
 
-`.env` (generate the keys on the server and keep the file private with `chmod 600 .env`):
+The main `.env` settings (everything else is in `.env.example`):
 
-```
-MCPSQL_DOMAIN=example.com
-MCPSQL_DATA_DIR=/data
-MCPSQL_READ_KEY=<random hex>
-MCPSQL_WRITE_KEY=<random hex>
-```
+| Variable | Meaning |
+| --- | --- |
+| `MCPSQL_DOMAIN` | domain for Caddy and HTTPS |
+| `MCPSQL_TAG` | image version (`malexple/mcp-sql`, `malexple/mcp-sql-bot`, `malexple/mcp-sql-web`) |
+| `MCPSQL_MULTI_ENABLED` | `true` for the multi-user mode |
+| `MCPSQL_INTERNAL_KEY` | secret between the bot and the service (`openssl rand -hex 32`) |
+| `BOT_TOKEN` | token from BotFather |
+| `BOT_PUBLIC_URL` | address that the bot shows to users |
 
-Before the first start, point the domain's DNS A record to the server and open TCP 80 and 443. Then:
+Before the first start point the domain's DNS A record to the server and open TCP 80 and 443. Then `docker compose pull`, `docker compose up -d` and `docker compose logs`. Do not run `docker compose down -v`: it deletes the volumes with the databases and the certificates. Check `https://<domain>/internal/stats`: it must answer 404.
 
-```bash
-docker compose pull
-docker compose up -d
-docker compose logs caddy
-```
+Release: `.\scripts\publish.ps1 -Version 0.1.1` (Linux and macOS: `scripts/publish.sh 0.1.1`) runs the tests, builds the three images for linux/amd64 and pushes them; `-NoPush` only builds. Then set `MCPSQL_TAG` on the server and run `docker compose pull` and `docker compose up -d`. To roll back, set the previous tag.
 
-Do not run `docker compose down -v`: it deletes the volumes with the databases and the certificates.
 
 #### Upload the index
 
@@ -350,6 +376,112 @@ Expected: `patch: ...patch-5-6.sql.gz (seq 5 -> 6, ...)`, then `applied patch-5-
 5. In a new thread enable the connector and ask, for example, "show index_info" or "find the type IndexWriter".
 
 Use the read key only. The write key must never be given to an MCP client.
+
+In hosted mode use the read key from the bot and the address `https://<domain>/mcp/<workspace>` instead of `/mcp`.
+
+
+## Local check
+
+This section checks the chain Indexer -> mcp-sql-service -> MCP queries on your own computer. The examples come from a real check of a project with 586 files, 710 types and 5378 members. Assumed paths: repository `D:\project\java\indexer`, jar `D:\project\Indexer.jar`, project `D:\project\java\manuscriptium`, server `http://localhost:8080`, keys `read-secret` and `write-secret` (for local use only), workspace `manuscriptium`.
+
+### 1. Build Indexer.jar
+
+```powershell
+cd D:\project\java\indexer
+./gradlew clean build
+```
+
+Copy the jar from `indexer-cli\build\libs\` to `D:\project\Indexer.jar`. `java -jar D:\project\Indexer.jar --help` must list `apply`, `diff` and `push`.
+
+### 2. Start the service
+
+Docker: create `.env` next to `docker-compose.yml` (`MCPSQL_DOMAIN=localhost`, `MCPSQL_DATA_DIR=/data`, `MCPSQL_READ_KEY=read-secret`, `MCPSQL_WRITE_KEY=write-secret`) and run
+
+```powershell
+cd D:\project\java\indexer\mcp-sql-service
+./gradlew :mcp-sql-service:bootJar
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build mcp-sql
+docker compose logs mcp-sql
+```
+
+The local file builds the image from the sources and publishes port 8080 on `127.0.0.1` only. A new build is needed after every code change: tests do not update a running container. If Docker Desktop reports `request returned Internal Server Error for API route`, restart Docker Desktop, run `wsl --update` and `wsl --shutdown`, then start it again.
+
+Without Docker: `./gradlew :mcp-sql-service:bootJar`, set `MCPSQL_DATA_DIR`, `MCPSQL_READ_KEY` and `MCPSQL_WRITE_KEY` in the environment and run `java -jar mcp-sql-service\build\libs\app.jar` in a separate window.
+
+### 3. First index and upload
+
+From the project directory:
+
+```powershell
+java -jar ..\..\Indexer.jar -r . -l=java --stats
+$env:MCPSQL_WRITE_KEY="write-secret"
+java -jar ..\..\Indexer.jar push --server http://localhost:8080 --workspace manuscriptium --db .index\index.db
+```
+
+Expect `mode=full`, `failed=0`, `seq=1` and then `database uploaded: {"workspace":"manuscriptium","dbId":"...","seq":1,...}`.
+
+### 4. MCP queries
+
+Every request is `POST http://localhost:8080/mcp` with the headers `Authorization: Bearer read-secret`, `Content-Type: application/json` and `Accept: application/json, text/event-stream`. The answer is in `result.content[0].text`.
+
+```bash
+curl -X POST 'http://localhost:8080/mcp' \
+  -H 'Authorization: Bearer read-secret' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data-raw '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"index_info","arguments":{"workspace":"manuscriptium"}}}'
+```
+
+Replace the method with `tools/list` to list the tools. Typical chain: `index_info`, then `find_type` (argument `name`), `context` (`fqn`), `read_source` (`fqn`, `member`), `search` (`text`), `callers` (`name`), `read_lines` (`path`, `from`, `to`), and `sql` for anything else, for example `SELECT name, dir FROM gradle_modules ORDER BY name` (8 rows on this project). The `workspace` argument is optional while the server holds one workspace; `project` is optional, without it the search covers all projects.
+
+### 5. Changes: incremental run and patch
+
+The order is strict: a patch applies only if it continues the server's `seq`.
+
+1. After every full run upload the database: `push --db`.
+2. Change the project files.
+3. Run `java -jar ..\..\Indexer.jar -r . -l=java --incremental --patch-dir .index\patches --stats`. Expect `mode=incremental` and a line like `patch: ...patch-5-6.sql.gz (seq 5 -> 6, ...)`.
+4. Run `java -jar ..\..\Indexer.jar push --server http://localhost:8080 --workspace manuscriptium --patch-dir .index\patches`. Expect `applied patch-5-6.sql.gz` and `server is now at seq 6`.
+5. Check with `index_info` (new `seq`, field `notes`) and with `search` for the text you changed.
+
+### 6. Common situations
+
+| Message or symptom | Cause | What to do |
+| --- | --- | --- |
+| `patch: no data changes, no patch written` | file hashes match the database | normal; change a file again |
+| no patch after a full run | a full run (no `--incremental`) writes no patch | `push --db`, then edit and run `--incremental --patch-dir` |
+| `server is at seq N; no patch ... continues it` | the local `seq` went ahead of the server, the chain is broken | upload the whole database with `push --db` and delete old patches |
+| `seq` grew by several units | every indexer run increases `seq`, repeated full runs too | avoid extra runs between `push --db` and a patch |
+| new files are not visible | the file list comes from `git ls-files` | `git add` the file |
+| `notes` says "full run recommended" | after about 100 changes dependent files may have stale `resolved` and `type_deps` | one full run and `push --db` |
+
+### 7. Multi-user mode locally
+
+1. Add to `.env`: `MCPSQL_MULTI_ENABLED=true`, `MCPSQL_INTERNAL_KEY=internal-secret`, `BOT_TOKEN=<token>` (needed only for the bot) and `BOT_PUBLIC_URL=http://localhost:8080`.
+2. Build all jars and start everything: `./gradlew :mcp-sql-service:bootJar :mcp-sql-bot:bootJar :mcp-sql-web:bootJar`, then `docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build`. The website is at `http://127.0.0.1:8081`.
+3. Get keys without the bot:
+
+```bash
+curl -X POST http://localhost:8080/internal/keys \
+  -H 'Content-Type: application/json' -H 'X-Internal-Key: internal-secret' \
+  --data '{"tgId": 1001, "ttl": "1d"}'
+```
+
+4. Upload with the returned `writeKey` (`MCPSQL_WRITE_KEY`) and query `http://localhost:8080/mcp/manuscriptium` with the `readKey`. A second user (another `tgId`) gets `404 not found` for the same address.
+5. `GET /api/usage` with the write key shows today's counters. `POST /internal/reset` with `{"tgId": 1001}` revokes the keys and deletes the databases. The old static keys no longer work in this mode.
+
+## Repository modules
+
+| Module | Purpose |
+| --- | --- |
+| `indexer-core` | parsing and writing the SQLite index |
+| `indexer-cli` | `Indexer.jar`: indexing, `diff`, `apply`, `push` |
+| `mcp-sql-service` | MCP server, REST API, keys and limits |
+| `mcp-sql-bot` | Telegram bot (long polling), works through the internal API |
+| `mcp-sql-web` | public website with statistics, no keys |
+
+`./gradlew test` runs the tests of all modules, including a smoke test that starts the whole service in multi-user mode.
+
 
 ## Troubleshooting
 
