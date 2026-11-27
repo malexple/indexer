@@ -23,3 +23,10 @@ mcpsql:
   sql-timeout-seconds: 3
   sql-max-rows: 200
   max-upload-mb: 200
+  multi:
+    enabled: ${MCPSQL_MULTI_ENABLED:false}
+    internal-key: ${MCPSQL_INTERNAL_KEY:}
+    max-active-users: ${MCPSQL_MAX_ACTIVE_USERS:50}
+    key-issues-per-day: ${MCPSQL_KEY_ISSUES_PER_DAY:5}
+    max-workspaces: ${MCPSQL_MAX_WORKSPACES:3}
+    max-db-mb: ${MCPSQL_MAX_DB_MB:20}

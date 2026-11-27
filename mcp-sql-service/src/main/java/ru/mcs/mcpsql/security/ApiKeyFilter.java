@@ -9,28 +9,57 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import ru.mcs.mcpsql.config.MultiUserProperties;
 import ru.mcs.mcpsql.config.ServiceProperties;
+import ru.mcs.mcpsql.users.KeyService;
+import ru.mcs.mcpsql.users.Principal;
+import ru.mcs.mcpsql.users.Scope;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Instant;
+import java.util.Optional;
 
-/** /api/** needs the write key; everything else except /health needs the read or the write key. */
+/**
+ * /api/** needs a write key; /internal/** needs the internal key (multi-user mode only); everything else except
+ * /health needs a read or a write key. Local mode compares with the two configured keys; multi-user mode looks
+ * the key up in the user database. The result is stored in the request as a {@link Principal}.
+ */
 @Component
 @Order(10)
 public class ApiKeyFilter extends OncePerRequestFilter {
+
+    public static final String PRINCIPAL_ATTR = "mcpsql.principal";
 
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyFilter.class);
 
     private final byte[] readKey;
     private final byte[] writeKey;
+    private final byte[] internalKey;
+    private final boolean multi;
+    private final KeyService keys;
 
-    public ApiKeyFilter(ServiceProperties properties) {
+    public ApiKeyFilter(ServiceProperties properties, MultiUserProperties multiProperties, Optional<KeyService> keys) {
         this.readKey = properties.readKey().getBytes(StandardCharsets.UTF_8);
         this.writeKey = properties.writeKey().getBytes(StandardCharsets.UTF_8);
-        if (readKey.length == 0 || writeKey.length == 0) {
+        this.internalKey = multiProperties.internalKey().getBytes(StandardCharsets.UTF_8);
+        this.multi = multiProperties.enabled();
+        this.keys = keys.orElse(null);
+        if (multi && this.keys == null) {
+            throw new IllegalStateException("multi-user mode needs the key service");
+        }
+        if (multi) {
+            if (internalKey.length == 0) {
+                LOG.warn("mcpsql.multi.internal-key is empty: /internal/** rejects every request");
+            }
+        } else if (readKey.length == 0 || writeKey.length == 0) {
             LOG.warn("mcpsql.read-key or mcpsql.write-key is empty: the matching endpoints reject every request");
         }
+    }
+
+    public static Principal principal(HttpServletRequest request) {
+        return (Principal) request.getAttribute(PRINCIPAL_ATTR);
     }
 
     @Override
@@ -41,27 +70,54 @@ public class ApiKeyFilter extends OncePerRequestFilter {
             chain.doFilter(request, response);
             return;
         }
-        byte[] token = token(request);
-        boolean allowed = path.startsWith("/api/")
-                ? matches(token, writeKey)
-                : matches(token, readKey) || matches(token, writeKey);
-        if (!allowed) {
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.setHeader("WWW-Authenticate", "Bearer");
-            response.setContentType("text/plain;charset=UTF-8");
-            response.getWriter().write("unauthorized");
+        if (path.startsWith("/internal/")) {
+            String header = request.getHeader("X-Internal-Key");
+            byte[] given = header == null ? new byte[0] : header.strip().getBytes(StandardCharsets.UTF_8);
+            if (!multi || !matches(given, internalKey)) {
+                unauthorized(response);
+                return;
+            }
+            chain.doFilter(request, response);
             return;
         }
+        Principal principal = authenticate(token(request));
+        boolean needsWrite = path.startsWith("/api/");
+        if (principal == null || (needsWrite && principal.scope() != Scope.WRITE)) {
+            unauthorized(response);
+            return;
+        }
+        request.setAttribute(PRINCIPAL_ATTR, principal);
         chain.doFilter(request, response);
     }
 
-    private static byte[] token(HttpServletRequest request) {
+    private Principal authenticate(String token) {
+        if (multi) {
+            return keys.authenticate(token, Instant.now()).orElse(null);
+        }
+        byte[] given = token.getBytes(StandardCharsets.UTF_8);
+        if (matches(given, writeKey)) {
+            return new Principal(0, Scope.WRITE, 0);
+        }
+        if (matches(given, readKey)) {
+            return new Principal(0, Scope.READ, 0);
+        }
+        return null;
+    }
+
+    private static void unauthorized(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        response.setHeader("WWW-Authenticate", "Bearer");
+        response.setContentType("text/plain;charset=UTF-8");
+        response.getWriter().write("unauthorized");
+    }
+
+    private static String token(HttpServletRequest request) {
         String header = request.getHeader("Authorization");
         if (header != null && header.regionMatches(true, 0, "Bearer ", 0, 7)) {
-            return header.substring(7).strip().getBytes(StandardCharsets.UTF_8);
+            return header.substring(7).strip();
         }
         String apiKey = request.getHeader("X-API-Key");
-        return apiKey == null ? new byte[0] : apiKey.strip().getBytes(StandardCharsets.UTF_8);
+        return apiKey == null ? "" : apiKey.strip();
     }
 
     private static boolean matches(byte[] token, byte[] key) {

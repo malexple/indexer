@@ -11,6 +11,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import ru.mcs.indexer.db.ProjectNames;
+import ru.mcs.mcpsql.users.Principal;
 import ru.mcs.mcpsql.workspace.WorkspaceService;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -34,13 +35,15 @@ import java.util.regex.Pattern;
  * Binds an MCP request to a workspace (and optionally a project) taken from the URL:
  * /mcp/{workspace} and /mcp/{workspace}/{project}. The path values are written into the arguments of every
  * tools/call, so a client cannot address anything else on this URL. The request is then handed on as plain /mcp.
+ * In multi-user mode every tools/call, also on plain /mcp, gets the owner from the key in front of the workspace
+ * ("7/name"); whatever the client wrote is only ever taken as a name inside its own space.
  * The arguments are rewritten in the body (not kept in a ThreadLocal) because tool methods run on another thread.
  */
 @Component
 @Order(20)
 public class McpScopeFilter extends OncePerRequestFilter {
 
-    private static final Pattern PATH = Pattern.compile("^/mcp/([^/]+)(?:/([^/]+))?/?$");
+    private static final Pattern PATH = Pattern.compile("^/mcp(?:/([^/]+)(?:/([^/]+))?)?/?$");
     private static final Set<String> PROJECT_TOOLS =
             Set.of("find_type", "context", "read_source", "read_lines", "search", "callers");
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -62,7 +65,21 @@ public class McpScopeFilter extends OncePerRequestFilter {
         }
         String workspace = m.group(1);
         String project = m.group(2);
-        if (!exists(workspace) || (project != null && !ProjectNames.isValid(project))) {
+        boolean multi = workspaces.multi();
+        if (workspace == null && !multi) {
+            chain.doFilter(request, response);
+            return;
+        }
+        Long owner = null;
+        if (multi) {
+            Principal principal = ApiKeyFilter.principal(request);
+            if (principal == null) {
+                plain(response, HttpServletResponse.SC_UNAUTHORIZED, "unauthorized");
+                return;
+            }
+            owner = principal.userId();
+        }
+        if (workspace != null && (!exists(owner, workspace) || (project != null && !ProjectNames.isValid(project)))) {
             plain(response, HttpServletResponse.SC_NOT_FOUND, "not found");
             return;
         }
@@ -73,7 +90,7 @@ public class McpScopeFilter extends OncePerRequestFilter {
         }
         byte[] out = body;
         if (body.length > 0) {
-            Rewrite rewrite = rewrite(body, workspace, project);
+            Rewrite rewrite = rewrite(body, owner, workspace, project);
             if (rewrite.error() != null) {
                 jsonRpcError(response, rewrite.id(), rewrite.error());
                 return;
@@ -83,9 +100,10 @@ public class McpScopeFilter extends OncePerRequestFilter {
         chain.doFilter(new Rewritten(request, out), response);
     }
 
-    private boolean exists(String workspace) {
+    private boolean exists(Long owner, String workspace) {
         try {
-            return Files.isRegularFile(workspaces.dbPath(workspace));
+            String key = owner == null ? workspace : owner + "/" + workspace;
+            return Files.isRegularFile(workspaces.dbPath(key));
         } catch (IllegalArgumentException e) {
             return false;
         }
@@ -94,7 +112,7 @@ public class McpScopeFilter extends OncePerRequestFilter {
     private record Rewrite(byte[] body, String error, JsonNode id) {
     }
 
-    private static Rewrite rewrite(byte[] body, String workspace, String project) {
+    private static Rewrite rewrite(byte[] body, Long owner, String workspace, String project) {
         JsonNode root;
         try {
             root = JSON.readTree(body);
@@ -103,13 +121,13 @@ public class McpScopeFilter extends OncePerRequestFilter {
         }
         if (root.isArray()) {
             for (JsonNode element : root) {
-                String error = apply(element, workspace, project);
+                String error = apply(element, owner, workspace, project);
                 if (error != null) {
                     return new Rewrite(null, error, element.path("id"));
                 }
             }
         } else {
-            String error = apply(root, workspace, project);
+            String error = apply(root, owner, workspace, project);
             if (error != null) {
                 return new Rewrite(null, error, root.path("id"));
             }
@@ -117,7 +135,7 @@ public class McpScopeFilter extends OncePerRequestFilter {
         return new Rewrite(JSON.writeValueAsBytes(root), null, null);
     }
 
-    private static String apply(JsonNode message, String workspace, String project) {
+    private static String apply(JsonNode message, Long owner, String workspace, String project) {
         if (!message.isObject() || !"\"tools/call\"".equals(message.path("method").toString())) {
             return null;
         }
@@ -135,11 +153,26 @@ public class McpScopeFilter extends OncePerRequestFilter {
         } else {
             return null;
         }
-        String error = bind(arguments, "workspace", workspace);
+        String error = bindWorkspace(arguments, owner, workspace);
         if (error == null && project != null && PROJECT_TOOLS.contains(tool)) {
             error = bind(arguments, "project", project);
         }
         return error;
+    }
+
+    /** Without an owner (local mode) the path value is written as is; with one it gets the "owner/" prefix. */
+    private static String bindWorkspace(ObjectNode arguments, Long owner, String bound) {
+        JsonNode current = arguments.path("workspace");
+        String name = isBlank(current) ? "" : text(current);
+        if (bound != null) {
+            if (!name.isEmpty() && !bound.equals(name)) {
+                return "this endpoint is bound to workspace '" + bound
+                        + "'; omit the 'workspace' argument or pass the same value";
+            }
+            name = bound;
+        }
+        arguments.put("workspace", owner == null ? name : owner + "/" + name);
+        return null;
     }
 
     private static String bind(ObjectNode arguments, String name, String bound) {

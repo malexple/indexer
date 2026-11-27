@@ -68,7 +68,7 @@ public class IndexQueries {
     public String indexInfo(String workspace, boolean includeSchema) {
         return run(workspace, (ws, c, b) -> {
             Map<String, String> global = meta(c, "");
-            b.line("workspace: " + ws + " | db_id: " + global.get("db_id") + " | seq: " + global.get("seq")
+            b.line("workspace: " + workspaces.displayName(ws) + " | db_id: " + global.get("db_id") + " | seq: " + global.get("seq")
                     + " | schema: " + global.get("schema_version"));
             b.line("project\tcommit\tbranch\tdirty\tindexed_at\tfiles\ttypes\tmembers\terrors\tsource\tresolve");
             List<String> slugs = new ArrayList<>();

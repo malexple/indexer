@@ -35,7 +35,7 @@ class KeyServiceTest {
     }
 
     private KeyService service(int maxUsers, int issuesPerDay) {
-        return new KeyService(db, new MultiUserProperties(true, maxUsers, issuesPerDay));
+        return new KeyService(db, MultiUserProperties.of(true, maxUsers, issuesPerDay));
     }
 
     private static void assertQuota(Runnable action, QuotaException.Kind kind) {
