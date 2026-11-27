@@ -43,6 +43,8 @@ public class WorkspaceService {
     private final int maxWorkspaces;
     private final long maxDbBytes;
     private final long minFreeBytes;
+    private final long maxPatchSqlBytes;
+    private final java.util.concurrent.Semaphore patchSlots = new java.util.concurrent.Semaphore(2);
     private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
 
     @Autowired
@@ -53,6 +55,7 @@ public class WorkspaceService {
         this.maxWorkspaces = multiProperties.maxWorkspaces();
         this.maxDbBytes = multiProperties.maxDbMb() * MB;
         this.minFreeBytes = multi ? multiProperties.minFreeDiskMb() * MB : 0;
+        this.maxPatchSqlBytes = multiProperties.maxPatchSqlMb() * MB;
         Files.createDirectories(dir);
     }
 
@@ -207,7 +210,7 @@ public class WorkspaceService {
                     throw new NoSuchElementException("workspace not found: " + key.name() + "; upload the database first");
                 }
                 Files.copy(target, work, StandardCopyOption.REPLACE_EXISTING);
-                PatchApplier.Result result = PatchApplier.apply(work, patch);
+                PatchApplier.Result result = applyChecked(work, patch);
                 if (key.owner() != null && Files.size(work) > maxDbBytes) {
                     throw new IllegalArgumentException("the database would be larger than " + maxDbBytes / MB
                             + " MB after this patch; the workspace is unchanged");
@@ -218,6 +221,31 @@ public class WorkspaceService {
         } finally {
             Files.deleteIfExists(patch);
             Files.deleteIfExists(work);
+        }
+    }
+
+    /** In multi-user mode a patch is unpacked, checked and only then applied, two at a time. */
+    private PatchApplier.Result applyChecked(Path work, Path patch) throws IOException, SQLException {
+        if (!multi) {
+            return PatchApplier.apply(work, patch);
+        }
+        boolean acquired;
+        try {
+            acquired = patchSlots.tryAcquire(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting to apply the patch");
+        }
+        if (!acquired) {
+            throw new IllegalStateException("the server is busy applying other patches, try again in a moment");
+        }
+        Path clean = temp();
+        try {
+            PatchGuard.sanitize(patch, clean, maxPatchSqlBytes);
+            return PatchApplier.apply(work, clean);
+        } finally {
+            patchSlots.release();
+            Files.deleteIfExists(clean);
         }
     }
 
@@ -352,12 +380,34 @@ public class WorkspaceService {
             if (scalar(c, "SELECT value FROM meta WHERE scope = '' AND key = 'db_id'") == null) {
                 throw new IllegalArgumentException("not an Indexer database (no db_id)");
             }
+            rejectForeignObjects(c);
             String check = scalar(c, "PRAGMA quick_check");
             if (!"ok".equals(check)) {
                 throw new IllegalArgumentException("database failed quick_check: " + check);
             }
         } catch (SQLException e) {
             throw new IllegalArgumentException("not an Indexer database: " + e.getMessage(), e);
+        }
+    }
+
+    /** A genuine index has tables, indexes and the FTS5 table code_fts only: no views, triggers or other modules. */
+    private static void rejectForeignObjects(Connection c) throws SQLException {
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT type, name FROM sqlite_master WHERE type NOT IN ('table', 'index')")) {
+            if (rs.next()) {
+                throw new IllegalArgumentException("not an Indexer database: it contains a " + rs.getString(1)
+                        + " '" + rs.getString(2) + "'");
+            }
+        }
+        try (Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT name, sql FROM sqlite_master WHERE sql LIKE 'CREATE VIRTUAL TABLE%'")) {
+            while (rs.next()) {
+                String sql = String.valueOf(rs.getString(2)).toLowerCase(java.util.Locale.ROOT);
+                if (!"code_fts".equals(rs.getString(1)) || !sql.contains("using fts5")) {
+                    throw new IllegalArgumentException("not an Indexer database: unexpected virtual table '"
+                            + rs.getString(1) + "'");
+                }
+            }
         }
     }
 

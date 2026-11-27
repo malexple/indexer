@@ -35,3 +35,4 @@ mcpsql:
     patch-interval-seconds: ${MCPSQL_PATCH_INTERVAL_SECONDS:30}
     requests-per-day: ${MCPSQL_REQUESTS_PER_DAY:5000}
     min-free-disk-mb: ${MCPSQL_MIN_FREE_DISK_MB:2048}
+    max-patch-sql-mb: ${MCPSQL_MAX_PATCH_SQL_MB:32}

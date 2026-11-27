@@ -1,8 +1,19 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   mcp-sql:
     image: malexple/mcp-sql:${MCPSQL_TAG:-0.1.0}
     restart: unless-stopped
     env_file: .env
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx512m -XX:+ExitOnOutOfMemoryError"
+    mem_limit: 768m
+    memswap_limit: 768m
+    logging: *logging
     volumes:
       - mcp-data:/data
     expose:
@@ -16,6 +27,10 @@ services:
       BOT_SERVICE_URL: http://mcp-sql:8080
       BOT_INTERNAL_KEY: ${MCPSQL_INTERNAL_KEY:-}
       BOT_PUBLIC_URL: ${BOT_PUBLIC_URL:-}
+      JAVA_TOOL_OPTIONS: "-Xmx128m -XX:+ExitOnOutOfMemoryError"
+    mem_limit: 320m
+    memswap_limit: 320m
+    logging: *logging
     depends_on:
       - mcp-sql
 
@@ -24,6 +39,10 @@ services:
     restart: unless-stopped
     environment:
       SITE_SERVICE_URL: http://mcp-sql:8080
+      JAVA_TOOL_OPTIONS: "-Xmx128m -XX:+ExitOnOutOfMemoryError"
+    mem_limit: 320m
+    memswap_limit: 320m
+    logging: *logging
     expose:
       - "8080"
     depends_on:
@@ -32,6 +51,8 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
     ports:
       - "80:80"
       - "443:443"

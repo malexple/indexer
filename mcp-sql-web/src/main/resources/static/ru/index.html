@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mcp-sql: индекс вашего кода для ИИ-ассистента</title>
+  <meta name="description" content="mcp-sql даёт ИИ-ассистенту доступ на чтение к индексу вашего кода. Ключи выдаёт Telegram-бот, а через заданный срок ключи и базы удаляются.">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <nav class="lang" aria-label="Язык">
+      <a href="/" data-lang="en">EN</a>
+      <a href="/ru/" data-lang="ru" aria-current="true" class="active">RU</a>
+    </nav>
+    <h1>mcp-sql</h1>
+    <p class="lead">ИИ-ассистент читает индекс вашего кода по MCP. Ключи выдаёт бот, а через заданный срок ключи и ваши базы удаляются с сервера.</p>
+    <p><a class="button" href="https://t.me/mcp_sql_bot">Получить ключи в Telegram</a></p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>Как это работает</h2>
+    <ol class="steps">
+      <li><b>Ключи.</b> Откройте <a href="https://t.me/mcp_sql_bot">@mcp_sql_bot</a>, нажмите «Получить ключи» и выберите срок: 5 часов, сутки или неделя.</li>
+      <li><b>Индекс.</b> Постройте индекс проекта утилитой Indexer и загрузите его своим ключом записи командой <code>push</code>.</li>
+      <li><b>Подключение.</b> Дайте ИИ-ассистенту ключ чтения и адрес <code>https://<span class="origin">ваш-сервер</span>/mcp/ИМЯ_БАЗЫ</code>. Ассистент сможет только читать.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Сейчас на сервере</h2>
+    <div id="stats-error" class="notice" hidden>Статистика временно недоступна.</div>
+    <div id="stats-stale" class="notice" hidden>Данные могут быть неактуальны: сервер статистики не отвечает.</div>
+    <div class="cards">
+      <div class="card"><div class="num" id="users-active">–</div><div class="label">пользователей с ключами сейчас</div></div>
+      <div class="card"><div class="num" id="users-capacity">–</div><div class="label">мест всего</div></div>
+      <div class="card"><div class="num" id="users-registered">–</div><div class="label">зарегистрировано за всё время</div></div>
+      <div class="card"><div class="num" id="storage-used">–</div><div class="label">занято базами, МБ</div></div>
+    </div>
+    <p class="bar-label">Занятость мест</p>
+    <div class="bar" role="img" aria-label="Занятость мест"><span id="bar"></span></div>
+    <p class="muted">Активные пары ключей:
+      5 часов — <b id="pairs-5h">–</b>,
+      сутки — <b id="pairs-1d">–</b>,
+      неделя — <b id="pairs-7d">–</b>.
+      Свободно на диске: <b id="storage-free">–</b> ГБ.</p>
+    <p class="muted" id="generated"></p>
+  </section>
+
+  <section>
+    <h2>Лимиты</h2>
+    <table class="limits">
+      <tbody id="limits"></tbody>
+    </table>
+    <p class="muted">Счётчики считаются по суткам UTC. Лимиты нужны, чтобы сервис хватало всем.</p>
+  </section>
+
+  <section>
+    <h2>Безопасность и данные</h2>
+    <ul>
+      <li>Ключ записи только для вас, ключ чтения для ассистента. Сервер хранит лишь их хеши.</li>
+      <li>Ваши базы лежат отдельно от баз других пользователей и недоступны по чужим ключам.</li>
+      <li>Когда срок ключей истекает, базы удаляются автоматически, обычно в течение минуты.</li>
+      <li>Если ключи попали не в те руки, нажмите в боте «Удалить всё»: ключи отзываются, базы стираются сразу.</li>
+      <li>Не загружайте в индекс то, что нельзя показывать ассистенту и серверу: индекс содержит исходный код и структуру проекта.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Пример подключения</h2>
+    <p>Для MCP-клиента, который принимает адрес и заголовок:</p>
+    <pre><code id="example"></code></pre>
+  </section>
+</main>
+
+<footer class="wrap muted">
+  <p>Бот: <a href="https://t.me/mcp_sql_bot">@mcp_sql_bot</a></p>
+</footer>
+<script src="/app.js" defer></script>
+</body>
+</html>
