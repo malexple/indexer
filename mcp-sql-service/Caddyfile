@@ -1,9 +1,18 @@
 {$MCPSQL_DOMAIN} {
-    @service path /mcp /mcp/* /api/workspaces /api/workspaces/* /api/usage
-    handle @service {
-        reverse_proxy mcp-sql:8080
-    }
-    handle {
-        reverse_proxy mcp-sql-web:8080
-    }
+	# Сервис: MCP и API пользователя. Тело запроса ограничено чуть выше максимального размера базы.
+	@service path /mcp /mcp/* /api/workspaces /api/workspaces/* /api/usage
+	handle @service {
+		request_body {
+			max_size 25MB
+		}
+		reverse_proxy mcp-sql:8080 {
+			flush_interval -1
+		}
+	}
+
+	# Всё остальное отдаёт сайт. /internal/* и /public/* сервиса наружу не публикуются.
+	handle {
+		encode zstd gzip
+		reverse_proxy mcp-sql-web:8080
+	}
 }

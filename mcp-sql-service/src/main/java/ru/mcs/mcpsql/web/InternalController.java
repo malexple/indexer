@@ -56,7 +56,7 @@ public class InternalController {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("readKey", issued.readKey());
             body.put("writeKey", issued.writeKey());
-            body.put("statsToken", issued.statsToken());
+
             body.put("ttl", issued.ttl().label());
             body.put("expiresAt", issued.expiresAt().toString());
             return ResponseEntity.ok(body);
